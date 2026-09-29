@@ -1,4 +1,5 @@
 setDefaultTab("Main")
+
 TaskDemon = TaskDemon or {}
 
 if taskDemonWindow then
