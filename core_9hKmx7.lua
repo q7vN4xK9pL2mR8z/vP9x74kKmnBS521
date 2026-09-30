@@ -148,6 +148,18 @@ function TaskDemon.agendaPadrao()
     return {ativo = false, label = "",
             horariosDia = {dom = "", seg = "", ter = "", qua = "", qui = "", sex = "", sab = ""}}
 end
+TaskDemon.EVENTOS = {
+    ev_snowball  = {titulo = "Snowball War (em breve)", curto = "Snowball"},
+    ev_island    = {titulo = "Island Of Elementals", curto = "Island", pronto = true},
+    ev_firestorm = {titulo = "FireStorm (em breve)", curto = "FireStorm"},
+    ev_zombie    = {titulo = "Zombie (em breve)", curto = "Zombie"},
+}
+TaskDemon.ORDEM_EVENTOS = {"ev_snowball", "ev_island", "ev_firestorm", "ev_zombie"}
+for _, k in ipairs(TaskDemon.ORDEM_EVENTOS) do
+    cfg.agenda[k] = cfg.agenda[k] or TaskDemon.agendaPadrao()
+end
+cfg.evLabelFim = cfg.evLabelFim or "inicio"
+
 for _, k in ipairs(TaskDemon.AGENDAVEIS) do
     local ag = cfg.agenda[k] or TaskDemon.agendaPadrao()
     if not ag.horariosDia then
@@ -428,7 +440,7 @@ end
 function TD.caminhoReto(de, para)
     if not TD.analisarTile or not g_map then return nil end
     local distancia = math.max(math.abs(para.x - de.x), math.abs(para.y - de.y))
-    if distancia == 0 or distancia > 40 then return nil end
+    if distancia == 0 or distancia > math.min(40, cfg.buscaMax or 150) then return nil end
     local dirs, x, y = {}, de.x, de.y
     local mapa = {["0,-1"] = North or 0, ["1,0"] = East or 1, ["0,1"] = South or 2, ["-1,0"] = West or 3,
         ["1,-1"] = NorthEast or 4, ["1,1"] = SouthEast or 5, ["-1,1"] = SouthWest or 6, ["-1,-1"] = NorthWest or 7}
@@ -468,7 +480,8 @@ function TD.irParaCaminho(destino)
         TD.caminhoCalc = t
         TD.caminho = nil
         if destino.z == p.z then
-            TD.caminho = TD.caminhoReto(p, destino) or calcularCaminho(p, destino, true, 150) or calcularCaminho(p, destino, false, 150)
+            local busca = cfg.buscaMax or 150
+            TD.caminho = TD.caminhoReto(p, destino) or calcularCaminho(p, destino, true, busca) or calcularCaminho(p, destino, false, busca)
         end
         if TD.caminho then TD.caminho = TD.endireitar(p, TD.caminho) end
         TD.caminhoIdx = 1
@@ -619,7 +632,7 @@ function TD.andarRota()
 
     local wAtual = rotaA[TD.wp]
     if not wAtual then return end
-    local espera = tonumber(wAtual[4]) or (cfg.waitTodos or 0)
+    local espera = tonumber(wAtual[4]) or math.floor((cfg.delayGoto or 0) * 1000)
     local lado = TD.LADOS[wAtual[5] or ""]
     local exato = TD.gotoExato(TD.wp) or lado ~= nil
 
@@ -941,6 +954,7 @@ end
 TD.emPz = emPz
 
 function TD.pkHuntAtacado(atacante)
+    if TD.evRun then return end
     if storage.BossAntiTrapTPEnabled and not TD.ativo then return end
     if TD.marcarInimigo then TD.marcarInimigo(atacante) end
     if TD.entrarEmPerigo then TD.entrarEmPerigo() end
@@ -1553,7 +1567,7 @@ function TD.contarGuildAzul(p, marcar)
 end
 
 function TD.vigiarEscudo()
-    if storage.BossAntiTrapTPEnabled then return end
+    if storage.BossAntiTrapTPEnabled or TD.evRun then return end
     if TD.pkFase or not cfg.fuga or not cfg.fuga.escudoAtivo then return end
     if TD.ativo or not cfg.pkHunt.ativo then return end
     if not (CaveBot and CaveBot.isOn and CaveBot.isOn()) then return end
@@ -1599,6 +1613,194 @@ function TD.resetarPK()
     end
     TD.log("PK resetado.")
 end
+
+TD.evRun = nil
+TD.ISLAND = {
+    sala = {x1 = 19286, x2 = 19298, y1 = 19121, y2 = 19129, z = 7},
+    bosses = {"island fire", "island ice", "island earth", "island energy", "island death"},
+    tp = 1949,
+}
+
+function TD.naSalaIsland(p)
+    local s = TD.ISLAND.sala
+    return p and p.z == s.z and p.x >= s.x1 and p.x <= s.x2 and p.y >= s.y1 and p.y <= s.y2
+end
+
+function TaskDemon.checkinEvento()
+    if not cfg.eventosAtivo or TD.evRun or TD.ativo then return true end
+    local hoje = os.date("%Y-%m-%d")
+    for _, k in ipairs(TD.ORDEM_EVENTOS) do
+        local j = TD.EVENTOS[k].pronto and TD.janelaAgora(k)
+        if j then
+            local chave = hoje .. "|" .. k .. "|" .. j.txt
+            if not cfg.disparos[chave] then
+                local ag = cfg.agenda[k]
+                if ag.label == "" then
+                    TD.log("Evento " .. TD.EVENTOS[k].titulo .. " sem label na agenda.")
+                    return true
+                end
+                cfg.disparos[chave] = true
+                TD.eventoChamado = k
+                TD.evEditando = k
+                if TD.atualizarEventos then pcall(TD.atualizarEventos) end
+                TD.log("Evento " .. TD.EVENTOS[k].titulo .. " (" .. j.txt .. "). Indo para '" .. ag.label .. "'.")
+                CaveBot.gotoLabel(ag.label)
+                return "retry"
+            end
+        end
+    end
+    return true
+end
+
+function TaskDemon.iniciarEvento(tipo)
+    if TD.evRun or not cfg.eventosAtivo then return true end
+    if TD.ativo then
+        TD.log("Evento nao iniciado: tem uma task rodando.")
+        return true
+    end
+    TD.evRun = {tipo = tipo or "island", fase = "SALA", inicio = os.time(), bossIdx = 0}
+    TD.evEditando = "ev_" .. TD.evRun.tipo
+    if TD.atualizarEventos then pcall(TD.atualizarEventos) end
+    TD.evTbAntes = TargetBot and TargetBot.isOn and TargetBot.isOn() or false
+    if TargetBot and TargetBot.setOff then TargetBot.setOff() end
+    if CaveBot and CaveBot.setOff then CaveBot.setOff() end
+    if g_game.setChaseMode then pcall(function() g_game.setChaseMode(1) end) end
+    TD.caminho, TD.destinoAtual, TD.destinoCliente, TD.semCaminhoAte = nil, nil, nil, nil
+    TD.log("Island Of Elementals iniciado.")
+    return true
+end
+
+function TD.terminarEvento(motivo, irFim)
+    if not TD.evRun then return end
+    TD.evTipoFim = TD.evRun.tipo
+    TD.evRun = nil
+    TD.eventoChamado = nil
+    if g_game.cancelFollow then pcall(g_game.cancelFollow) end
+    if TD.evTbAntes and TargetBot and TargetBot.setOn then TargetBot.setOn() end
+    TD.evTbAntes = nil
+    if CaveBot and CaveBot.setOn then CaveBot.setOn() end
+    local labelFim = TD.labelFimEvento and TD.labelFimEvento("ev_" .. (TD.evTipoFim or "island")) or cfg.evLabelFim
+    if irFim and labelFim ~= "" then CaveBot.gotoLabel(labelFim) end
+    TD.log("Evento encerrado: " .. motivo .. ".")
+end
+
+function TD.acharTpIsland(centro)
+    if not centro or not g_map then return nil end
+    local melhor, melhorD = nil, 99
+    for dx = -4, 4 do
+        for dy = -4, 4 do
+            local pos = {x = centro.x + dx, y = centro.y + dy, z = centro.z}
+            local tile = g_map.getTile(pos)
+            if tile then
+                local ok, itens = pcall(function() return tile:getItems() end)
+                for _, it in ipairs(ok and itens or {}) do
+                    if it:getId() == TD.ISLAND.tp then
+                        local d = math.max(math.abs(dx), math.abs(dy))
+                        if d < melhorD then melhor, melhorD = pos, d end
+                    end
+                end
+            end
+        end
+    end
+    return melhor
+end
+
+function TD.pisarEm(alvo, t)
+    local p = player:getPosition()
+    if not p or not alvo then return end
+    local d = dist(p, alvo)
+    if d == 0 then return end
+    if d == 1 then
+        if t >= (TD.evPassoAte or 0) then
+            local dir = DIR_DELTA[(alvo.x - p.x) .. "," .. (alvo.y - p.y)]
+            if dir ~= nil then
+                TD.evPassoAte = t + 300
+                if player.stopAutoWalk then pcall(function() player:stopAutoWalk() end) end
+                g_game.walk(dir)
+            end
+        end
+        return
+    end
+    TD.irParaCaminho(alvo)
+end
+
+function TD.cicloIsland()
+    local ev = TD.evRun
+    local p = player:getPosition()
+    if not p then return end
+    local t = agoraMs()
+    local okH, hp = pcall(function() return player:getHealth() end)
+    if okH and hp and hp <= 0 then return TD.terminarEvento("morreu", false) end
+    if os.time() - ev.inicio > 45 * 60 then return TD.terminarEvento("passou de 45 min", true) end
+
+    local antes = ev.ultimaPos
+    ev.ultimaPos = {x = p.x, y = p.y, z = p.z}
+    local pulou = antes and (antes.z ~= p.z or math.max(math.abs(antes.x - p.x), math.abs(antes.y - p.y)) > 5)
+
+    if TD.naSalaIsland(p) then
+        ev.fase = "SALA"
+        return
+    end
+
+    if pulou and ev.fase == "TP" then
+        if ev.bossNome == "island death" then return TD.terminarEvento("Island Death concluido", true) end
+        ev.fase = "BOSS"
+        ev.mortePos, ev.bossPos = nil, nil
+    elseif ev.fase == "SALA" then
+        ev.fase = "BOSS"
+    end
+
+    local boss = nil
+    for _, spec in ipairs(getSpectators()) do
+        local okM, ehM = pcall(function() return spec:isMonster() end)
+        if okM and ehM and (spec:getHealthPercent() or 0) > 0 then
+            local nome = spec:getName():lower()
+            for i, b in ipairs(TD.ISLAND.bosses) do
+                if nome:find(b, 1, true) then boss = spec ev.bossIdx = i ev.bossNome = b break end
+            end
+            if boss then break end
+        end
+    end
+
+    if boss then
+        ev.fase = "BOSS"
+        ev.bossPos = boss:getPosition()
+        ev.bossVisto = t
+        if g_game.getAttackingCreature() ~= boss and t >= (ev.ataqueAte or 0) then
+            ev.ataqueAte = t + 150
+            g_game.attack(boss)
+        end
+        if g_game.getFollowingCreature and g_game.getFollowingCreature() ~= boss and g_game.getAttackingCreature() ~= boss then
+            pcall(function() g_game.follow(boss) end)
+        end
+        return
+    end
+
+    if ev.fase == "BOSS" and ev.bossPos and t - (ev.bossVisto or 0) > 300 then
+        ev.fase = "TP"
+        ev.mortePos = ev.bossPos
+        ev.tpDesde = t
+        TD.log((ev.bossNome or "Boss") .. " morreu. Indo para o TP.")
+    end
+
+    if ev.fase == "TP" then
+        local tp = TD.acharTpIsland(ev.mortePos) or ev.mortePos
+        ev.tpPos = tp
+        TD.pisarEm(tp, t)
+        if tp and dist(p, tp) == 0 and t - (ev.tpDesde or t) > 4000 then
+            local alt = TD.acharTpIsland(p)
+            if alt and dist(p, alt) > 0 then TD.pisarEm(alt, t) end
+        end
+    end
+end
+
+macro(50, TD.protegido("evento", function()
+    if not TD.evRun then
+        if cfg.eventosAtivo and not TD.ativo and TD.naSalaIsland(player:getPosition()) then TaskDemon.iniciarEvento("island") end
+        return
+    end
+    if TD.evRun.tipo == "island" then TD.cicloIsland() end
+end))
 
 function TD.macrosExternos()
     return {
@@ -2145,6 +2347,23 @@ if onTalk then
 end
 
 TD.textoPlayer = nil
+function TD.textoAcima(texto, cor)
+    local okT = false
+    if player.setTitle then
+        okT = pcall(function()
+            if texto == "" then
+                if player.clearTitle then player:clearTitle() else player:setTitle("", "verdana-11px-rounded", cor) end
+            else
+                player:setTitle(texto, "verdana-11px-rounded", cor)
+            end
+        end)
+    end
+    if okT then
+        pcall(function() player:setText("", cor) end)
+    else
+        TD.marcarTexto(player, texto, cor)
+    end
+end
 macro(200, function()
     local texto, cor = "", "#FFFFFF"
     if TD.pkFase == "NO PZ" then
@@ -2152,10 +2371,12 @@ macro(200, function()
         texto, cor = "PZ " .. formatarTempo(math.max(0, resta)), "#7FDBFF"
     elseif TD.ativo then
         texto = "[" .. TD.progresso() .. "/" .. TD.metaDe() .. "]"
+    elseif not TD.evRun and TD.textoContagem then
+        texto, cor = TD.textoContagem()
     end
     if texto ~= TD.textoPlayer then
         TD.textoPlayer = texto
-        TD.marcarTexto(player, texto, cor)
+        TD.textoAcima(texto, cor)
     end
 end)
 
@@ -2797,6 +3018,7 @@ TaskDemonWindow < UIWindow
       anchors.left: parent.left
       anchors.verticalCenter: parent.verticalCenter
       text-auto-resize: true
+
     TDBtn
       id: closeButton
       text: X
@@ -2811,7 +3033,7 @@ TaskDemonWindow < UIWindow
     anchors.left: parent.left
     anchors.right: parent.right
     margin-top: 4
-    height: 42
+    height: 60
     layout:
       type: verticalBox
       spacing: 2
@@ -2822,21 +3044,25 @@ TaskDemonWindow < UIWindow
         spacing: 3
       TDBtn
         id: abaStatus
-        text: STATUS
+        text: TASK
+        width: 87
+      TDBtn
+        id: abaEventos
+        text: EVENTOS
         width: 87
       TDBtn
         id: abaAgenda
         text: AGENDA
-        width: 87
-      TDBtn
-        id: abaCaveBot
-        text: CAVEBOT
         width: 87
     Panel
       height: 20
       layout:
         type: horizontalBox
         spacing: 3
+      TDBtn
+        id: abaCaveBot
+        text: CAVEBOT
+        width: 87
       TDBtn
         id: abaTarget
         text: TARGET
@@ -2845,10 +3071,29 @@ TaskDemonWindow < UIWindow
         id: abaPK
         text: PK
         width: 87
-      TDBtn
-        id: abaEventos
-        text: EVENTOS
-        width: 87
+    Panel
+      height: 16
+      layout:
+        type: horizontalBox
+        spacing: 3
+      TDCheck
+        id: mostrarTask
+        width: 18
+      UILabel
+        id: relogioTask
+        width: 112
+        font: verdana-11px-rounded
+        color: #FFD24A
+        text-align: left
+      TDCheck
+        id: mostrarEvento
+        width: 18
+      UILabel
+        id: relogioEvento
+        width: 112
+        font: verdana-11px-rounded
+        color: #7FB2FF
+        text-align: left
 
   Panel
     id: pageStatus
@@ -2917,23 +3162,18 @@ TaskDemonWindow < UIWindow
         margin-top: 2
       TDCampo
         id: meta
-        width: 34
-    Panel
-      height: 20
-      margin-top: 3
-      layout:
-        type: horizontalBox
-        spacing: 4
+        width: 40
       TDInfo
-        text: Alcance (distância):
-        width: 120
+        text: Distancia:
+        width: 62
         margin-top: 2
+        margin-left: 40
       TDCampo
         id: alcance
         width: 34
       TDInfo
         text: sqm
-        width: 30
+        width: 26
         margin-top: 2
     TDBtn
       id: zerar
@@ -2959,6 +3199,42 @@ TaskDemonWindow < UIWindow
     layout:
       type: verticalBox
     Panel
+      height: 20
+      margin-bottom: 4
+      layout:
+        type: horizontalBox
+        spacing: 3
+      TDToggle
+        id: agTasks
+        text: AGENDA TASKS
+        width: 131
+      TDToggle
+        id: agEventos
+        text: AGENDA EVENTOS
+        width: 131
+    Panel
+      id: painelEventos
+      height: 392
+      visible: false
+      ScrollablePanel
+        id: secoesEv
+        anchors.top: parent.top
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.bottom: parent.bottom
+        margin-right: 13
+        vertical-scrollbar: secoesEvScroll
+        layout:
+          type: verticalBox
+      VerticalScrollBar
+        id: secoesEvScroll
+        anchors.top: parent.top
+        anchors.bottom: parent.bottom
+        anchors.right: parent.right
+        step: 30
+        pixels-scroll: true
+    Panel
+      id: painelTasks
       height: 392
       ScrollablePanel
         id: secoes
@@ -3006,7 +3282,7 @@ TaskDemonWindow < UIWindow
       spacing: 2
 
     TDTitulo
-      text: CaveBot da hunt (do bot) - liga ao voltar no DP
+      text: CaveBot da hunt (volta ao terminar)
     Panel
       height: 22
       layout:
@@ -3019,14 +3295,18 @@ TaskDemonWindow < UIWindow
       TDBtn
         id: cbAtualizar
         text: ATUALIZAR
-        width: 70
+        width: 67
     TDInfo
       id: cbAgora
       color: #7FB2FF
 
-    TDTitulo
-      text: CaveBots das tasks (do painel)
+    HorizontalSeparator
+      height: 2
       margin-top: 4
+
+    TDTitulo
+      text: CaveBot da task
+      margin-top: 2
     Panel
       height: 22
       layout:
@@ -3034,11 +3314,8 @@ TaskDemonWindow < UIWindow
         spacing: 3
       ComboBox
         id: perfilSel
-        width: 150
+        width: 266
         height: 22
-      TDCampo
-        id: perfilNome
-        width: 116
     Panel
       height: 20
       layout:
@@ -3047,21 +3324,26 @@ TaskDemonWindow < UIWindow
       TDBtn
         id: perfilNovo
         text: NOVO
-        width: 86
+        width: 64
         color: #77FF77
       TDBtn
         id: perfilRenomear
         text: RENOMEAR
-        width: 86
+        width: 64
+      TDBtn
+        id: cbEditar
+        text: EDITAR
+        width: 64
+        color: #7FB2FF
       TDBtn
         id: perfilExcluir
         text: EXCLUIR
-        width: 86
+        width: 64
         color: #FF8888
 
     Panel
       height: 20
-      margin-top: 10
+      margin-top: 6
       layout:
         type: horizontalBox
         spacing: 3
@@ -3078,7 +3360,7 @@ TaskDemonWindow < UIWindow
         text: DP (PK)
         width: 86
     Panel
-      height: 112
+      height: 124
       background-color: #0E0E0EEE
       border-width: 1
       border-color: #3A3A3A
@@ -3095,33 +3377,71 @@ TaskDemonWindow < UIWindow
         anchors.right: parent.right
         step: 16
         pixels-scroll: true
+    TDInfo
+      id: gotoInfo
+      color: #AAAAAA
     Panel
       height: 20
-      margin-top: 2
       layout:
         type: horizontalBox
         spacing: 3
       TDBtn
         id: gotoAdd
         text: + POSICAO
-        width: 78
+        width: 86
         color: #77FF77
       TDBtn
         id: gotoRemover
         text: REMOVER
-        width: 62
+        width: 86
         color: #FF8888
       TDBtn
         id: gotoClear
         text: CLEAR
-        width: 58
+        width: 86
         color: #FF5555
-      TDToggle
-        id: cbTask
-        width: 58
+
+    HorizontalSeparator
+      height: 2
+      margin-top: 4
+
+    TDTitulo
+      text: Goto selecionado
+      margin-top: 2
     Panel
       height: 20
+      layout:
+        type: horizontalBox
+        spacing: 3
+      TDInfo
+        text: Direcao
+        width: 44
+        margin-top: 2
+      TDBtn
+        id: gotoLado
+        width: 62
+      TDInfo
+        text: Wait
+        width: 28
+        margin-top: 2
+      TDBtn
+        id: gotoWaitBtn
+        width: 62
+      TDBtn
+        id: gotoWaitAplicar
+        text: SALVAR
+        width: 58
+        color: #77FF77
+
+    HorizontalSeparator
+      height: 2
+      margin-top: 4
+
+    TDTitulo
+      text: Opcoes
       margin-top: 2
+    Panel
+      height: 20
       layout:
         type: horizontalBox
         spacing: 3
@@ -3141,45 +3461,38 @@ TaskDemonWindow < UIWindow
         margin-top: 2
     Panel
       height: 20
-      margin-top: 2
       layout:
         type: horizontalBox
         spacing: 3
       TDInfo
-        text: Direcao
-        width: 44
-        margin-top: 2
-      TDBtn
-        id: gotoLado
+        text: Delay (s):
         width: 60
-      TDInfo
-        text: Wait
-        width: 28
-        margin-top: 2
-      TDBtn
-        id: gotoWaitBtn
-        width: 60
-      TDBtn
-        id: gotoWaitAplicar
-        text: SALVAR
-        width: 62
-        color: #77FF77
-    Panel
-      height: 20
-      margin-top: 2
-      layout:
-        type: horizontalBox
-        spacing: 3
-      TDInfo
-        text: Wait de todos os gotos (ms):
-        width: 160
         margin-top: 2
       TDCampo
         id: gotoWait
-        width: 50
-    TDInfo
-      id: gotoInfo
-      color: #AAAAAA
+        width: 40
+      TDInfo
+        text: Busca (sqm):
+        width: 76
+        margin-top: 2
+      TDCampo
+        id: buscaMax
+        width: 40
+
+    Panel
+      height: 22
+      margin-top: 6
+      layout:
+        type: horizontalBox
+        spacing: 3
+      TDToggle
+        id: cbTask
+        width: 131
+        height: 22
+      TDToggle
+        id: cbEventos
+        width: 131
+        height: 22
 
   Panel
     id: pagePK
@@ -3456,15 +3769,70 @@ TaskDemonWindow < UIWindow
     layout:
       type: verticalBox
       spacing: 2
-    TDTitulo
-      text: EVENTOS
-    UILabel
-      text: Sistema de eventos com horarios - em breve.
-      font: verdana-11px-rounded
-      color: #777777
-      text-align: center
+    Panel
       height: 20
+      layout:
+        type: horizontalBox
+        spacing: 3
+      TDBtn
+        id: evPrev
+        text: <
+        width: 24
+      UILabel
+        id: evNome
+        width: 214
+        font: verdana-11px-rounded
+        color: #FFD24A
+        text-align: center
+      TDBtn
+        id: evNext
+        text: >
+        width: 24
+    TDInfo
+      id: evPronto
+      margin-top: 2
+    Panel
+      height: 22
+      margin-top: 4
+      layout:
+        type: horizontalBox
+        spacing: 3
+      TDInfo
+        text: CaveBot:
+        width: 60
+        margin-top: 3
+      ComboBox
+        id: evCombo
+        width: 205
+        height: 22
+    Panel
+      height: 20
+      margin-top: 2
+      layout:
+        type: horizontalBox
+        spacing: 3
+      TDInfo
+        text: Label ao terminar:
+        width: 110
+        margin-top: 2
+      TDCampo
+        id: evLabelFim
+        width: 155
+    HorizontalSeparator
+      height: 2
+      margin-top: 6
+    TDInfo
+      id: evEstado
+      margin-top: 4
+      color: #FFD24A
+    TDInfo
+      id: evFase
+    TDInfo
+      id: evBoss
+    TDToggle
+      id: evMaster
       margin-top: 8
+      height: 24
 ]])
 
 taskDemonWindow = g_ui.createWidget("TaskDemonWindow", g_ui.getRootWidget())
@@ -3475,7 +3843,7 @@ taskDemonWindow.onMove = function(widget, newPos) cfg.pos = {x = newPos.x, y = n
 local w = taskDemonWindow
 local function el(id) return w:recursiveGetChildById(id) end
 local ui = {}
-for _, id in ipairs({"closeButton", "abaStatus", "abaAgenda", "abaCaveBot", "abaPK", "abaEventos",
+for _, id in ipairs({"closeButton", "relogioTask", "relogioEvento", "mostrarTask", "mostrarEvento", "abaStatus", "abaAgenda", "abaCaveBot", "abaPK", "abaEventos",
     "pageStatus", "pageAgenda", "pageCaveBot", "pagePK", "pageEventos", "pageTarget", "abaTarget",
     "tgPrev", "tgNome", "tgNext", "tgModo100", "tgModo50", "tgModo1", "tgSemMagia", "tgExoriCon",
     "tgExoriSan", "tgExevoMasSan", "tgGfb", "tgAvalanche", "tgSd", "tgInfo",
@@ -3484,9 +3852,10 @@ for _, id in ipairs({"closeButton", "abaStatus", "abaAgenda", "abaCaveBot", "aba
     "fugaBicar", "fugaMW", "fugaEscudo", "escudoQtd", "escudoSqm", "escudoAgora", "escudoVisto", "pkSalvar", "pkResetar", "fugaSkull", "fugaRunaMW", "fugaRunaVip", "fugaPz", "fugaSalvarPz", "fugaStatus",
     "secoes", "listaTarefas", "progresso", "estado", "rota", "alvo", "tela", "targetados", "volta",
     "agendaInfo", "ligar", "modo", "meta", "alcance", "zerar", "evento", "restaurar", "fechar",
-    "cbHunt", "cbAtualizar", "cbAgora", "perfilSel", "perfilNome", "perfilNovo", "perfilRenomear",
+    "cbHunt", "cbAtualizar", "cbAgora", "perfilSel", "perfilNovo", "perfilRenomear",
     "perfilExcluir",
-    "rotaPrincipal", "rotaCidade", "rotaDP", "listaGotos", "gotoAdd", "gotoRemover", "gotoInfo", "gotoGravar", "gravarSqm", "gotoWait", "gotoWaitAplicar", "gotoClear", "gotoLado", "gotoWaitBtn", "cbTask", "gotosScroll",
+    "rotaPrincipal", "rotaCidade", "rotaDP", "agTasks", "agEventos", "painelEventos", "painelTasks", "secoesEv", "evEstado", "evFase", "evBoss", "evLabelFim", "evPrev", "evNext", "evNome", "evPronto", "evCombo", "evMaster", "cbEventos",
+    "listaGotos", "gotoAdd", "gotoRemover", "gotoInfo", "gotoGravar", "gravarSqm", "gotoWait", "gotoWaitAplicar", "buscaMax", "cbEditar", "gotoClear", "gotoLado", "gotoWaitBtn", "cbTask", "gotosScroll",
     "pkAtivo", "pkFugas"}) do
     ui[id] = el(id)
 end
@@ -3505,7 +3874,7 @@ end
 
 local ABAS = {STATUS = "pageStatus", AGENDA = "pageAgenda", CAVEBOT = "pageCaveBot", PK = "pagePK", EVENTOS = "pageEventos", TARGET = "pageTarget"}
 local BOTOES_ABA = {STATUS = "abaStatus", AGENDA = "abaAgenda", CAVEBOT = "abaCaveBot", PK = "abaPK", EVENTOS = "abaEventos", TARGET = "abaTarget"}
-local ALTURAS = {STATUS = 402, AGENDA = 502, CAVEBOT = 514, PK = 657, EVENTOS = 162, TARGET = 380}
+local ALTURAS = {STATUS = 398, AGENDA = 546, CAVEBOT = 636, PK = 675, EVENTOS = 318, TARGET = 398}
 function TD.mostrarAba(nome)
     for aba, pagina in pairs(ABAS) do
         if aba == nome then ui[pagina]:show() else ui[pagina]:hide() end
@@ -3524,6 +3893,174 @@ ui.abaAgenda.onClick = function() TD.mostrarAba("AGENDA") end
 ui.abaCaveBot.onClick = function() TD.mostrarAba("CAVEBOT") end
 ui.abaPK.onClick = function() TD.mostrarAba("PK") end
 ui.abaEventos.onClick = function() TD.mostrarAba("EVENTOS") end
+cfg.evLabelFimPor = cfg.evLabelFimPor or {}
+cfg.eventoPerfil = cfg.eventoPerfil or {}
+TD.evEditando = TD.evEditando or "ev_island"
+function TD.labelFimEvento(k) return cfg.evLabelFimPor[k] or cfg.evLabelFim or "inicio" end
+function TD.alternarEventos(ligar)
+    if ligar == nil then ligar = not cfg.eventosAtivo end
+    cfg.eventosAtivo = ligar
+    if not ligar and TD.evRun then TD.terminarEvento("eventos desligados", false) end
+    if not ligar then TD.eventoChamado = nil end
+    TD.log(ligar and "Eventos LIGADOS." or "Eventos DESLIGADOS.")
+    TD.atualizarEventos()
+end
+function TD.atualizarEventos()
+    local k = TD.evEditando
+    local info = TD.EVENTOS[k]
+    ui.evNome:setText(info.titulo)
+    ui.evPronto:setText(info.pronto and "Sistema pronto" or "Sistema ainda nao feito (a agenda ignora)")
+    ui.evPronto:setColor(info.pronto and "#55DD55" or "#AAAAAA")
+    ui.evLabelFim.onTextChange = nil
+    ui.evLabelFim:setText(TD.labelFimEvento(k))
+    ui.evLabelFim.onTextChange = function(_, t) cfg.evLabelFimPor[TD.evEditando] = tostring(t):gsub("^%s+", ""):gsub("%s+$", "") end
+    ui.evCombo.onOptionChange = nil
+    ui.evCombo:clearOptions()
+    ui.evCombo:addOption("(nenhum)")
+    for _, n in ipairs(TD.nomesPerfis()) do ui.evCombo:addOption(n) end
+    pcall(function() ui.evCombo:setCurrentOption(cfg.eventoPerfil[k] or "(nenhum)") end)
+    ui.evCombo.onOptionChange = function(_, t) cfg.eventoPerfil[TD.evEditando] = (t ~= "(nenhum)") and t or nil end
+    pintarToggle(ui.evMaster, cfg.eventosAtivo, "EVENTOS: ON", "EVENTOS: OFF")
+    pintarToggle(ui.cbEventos, cfg.eventosAtivo, "EVENTOS: ON", "EVENTOS: OFF")
+end
+local function trocarEvento(passo)
+    local idx = 1
+    for i, k in ipairs(TD.ORDEM_EVENTOS) do if k == TD.evEditando then idx = i end end
+    TD.evEditando = TD.ORDEM_EVENTOS[(idx - 1 + passo) % #TD.ORDEM_EVENTOS + 1]
+    TD.atualizarEventos()
+end
+function TD.proximaJanela(lista, soProntos)
+    local agora = os.time()
+    local melhor, melhorK = nil, nil
+    for _, k in ipairs(lista) do
+        local ag = cfg.agenda[k]
+        local ok = ag and ag.ativo and (not soProntos or (TD.EVENTOS[k] and TD.EVENTOS[k].pronto))
+        if ok then
+            if TD.janelaAgora(k) then return 0, k end
+            local permitidos = TD.TAREFAS[k] and TD.TAREFAS[k].dias
+            for d = 0, 7 do
+                local t = os.date("*t", agora + d * 86400)
+                local dia = TD.DIAS[t.wday]
+                if not permitidos or permitidos[dia] then
+                    local base = os.time({year = t.year, month = t.month, day = t.day, hour = 0, min = 0, sec = 0})
+                    for _, j in ipairs(TD.janelasDaTask(k, ag.horariosDia[dia]) or {}) do
+                        local inicio = base + j.ini * 60
+                        if inicio > agora and (not melhor or inicio - agora < melhor) then
+                            melhor, melhorK = inicio - agora, k
+                        end
+                    end
+                end
+            end
+        end
+    end
+    return melhor, melhorK
+end
+
+local function tempoCurto(seg)
+    if seg >= 86400 then
+        return string.format("%dd %02dh%02d", math.floor(seg / 86400), math.floor(seg % 86400 / 3600), math.floor(seg % 3600 / 60))
+    end
+    if seg >= 3600 then
+        return string.format("%d:%02d:%02d", math.floor(seg / 3600), math.floor(seg % 3600 / 60), seg % 60)
+    end
+    return string.format("%02d:%02d", math.floor(seg / 60), seg % 60)
+end
+
+cfg.mostrarTask = cfg.mostrarTask == true
+cfg.mostrarEvento = cfg.mostrarEvento == true
+TD.prox = {}
+function TD.calcularProximos()
+    local agora = os.time()
+    local segT, kT = TD.proximaJanela(TD.AGENDAVEIS)
+    local segE, kE = TD.proximaJanela(TD.ORDEM_EVENTOS, false)
+    TD.prox = {
+        task = segT and {fim = agora + segT, nome = TD.TAREFAS[kT].curto} or nil,
+        evento = segE and {fim = agora + segE, nome = TD.EVENTOS[kE].curto} or nil,
+    }
+end
+function TD.textoContagem()
+    local agora = os.time()
+    local vencido = (TD.prox.task and TD.prox.task.fim < agora) or (TD.prox.evento and TD.prox.evento.fim < agora)
+    if vencido and agora ~= TD.ultimoCalcProx then
+        TD.ultimoCalcProx = agora
+        TD.calcularProximos()
+    end
+    local escolhido, cor = nil, "#FFFFFF"
+    local t, e = cfg.mostrarTask and TD.prox.task, cfg.mostrarEvento and TD.prox.evento
+    if t and (t.fim - agora > 600 or t.fim - agora <= 0) then t = nil end
+    if e and (e.fim - agora > 600 or e.fim - agora <= 0) then e = nil end
+    if t and (not e or t.fim <= e.fim) then escolhido, cor = t, "#FFD24A"
+    elseif e then escolhido, cor = e, "#7FB2FF" end
+    if not escolhido then return "", "#FFFFFF" end
+    local resta = escolhido.fim - agora
+    if resta <= 0 then return escolhido.nome .. " agora", cor end
+    return escolhido.nome .. " em " .. tempoCurto(resta), cor
+end
+function TD.pintarMostrar()
+    local function caixa(wd, v)
+        local ok, box = pcall(function() return wd:getChildById("box") end)
+        if ok and box then
+            pcall(function()
+                box:setText(v and "v" or "")
+                box:setBackgroundColor(v and "#1FA83A" or "#111111")
+                box:setBorderColor(v and "#35D455" or "#888888")
+            end)
+        end
+    end
+    caixa(ui.mostrarTask, cfg.mostrarTask)
+    caixa(ui.mostrarEvento, cfg.mostrarEvento)
+end
+function TD.alternarMostrar(qual)
+    if qual == "task" then cfg.mostrarTask = not cfg.mostrarTask else cfg.mostrarEvento = not cfg.mostrarEvento end
+    TD.pintarMostrar()
+    TD.log((qual == "task" and "Contagem da task" or "Contagem do evento") .. " em cima do personagem: " ..
+        (((qual == "task") and cfg.mostrarTask or (qual ~= "task" and cfg.mostrarEvento)) and "LIGADA" or "DESLIGADA") .. ".")
+end
+ui.mostrarTask.onClick = function() TD.alternarMostrar("task") end
+ui.mostrarEvento.onClick = function() TD.alternarMostrar("evento") end
+TD.pintarMostrar()
+TD.calcularProximos()
+macro(1000, function() TD.calcularProximos() end)
+
+macro(1000, function()
+    if not w:isVisible() then return end
+    local txtT
+    if TD.ativo then
+        txtT = (TD.TAREFAS[cfg.tarefa] and TD.TAREFAS[cfg.tarefa].curto or "Task") .. " agora"
+    else
+        local seg, k = TD.proximaJanela(TD.AGENDAVEIS)
+        txtT = seg and (TD.TAREFAS[k].curto .. " " .. (seg == 0 and "agora" or tempoCurto(seg))) or "Task --"
+    end
+    local txtE
+    if TD.evRun then
+        txtE = (TD.EVENTOS["ev_" .. TD.evRun.tipo] or {curto = "Evento"}).curto .. " agora"
+    else
+        local seg, k = TD.proximaJanela(TD.ORDEM_EVENTOS, false)
+        txtE = seg and (TD.EVENTOS[k].curto .. " " .. (seg == 0 and "agora" or tempoCurto(seg))) or "Evento --"
+    end
+    ui.relogioTask:setText(txtT)
+    ui.relogioEvento:setText(txtE)
+    pcall(function() ui.mostrarTask:setTooltip("Mostrar em cima do personagem (Alt+2).\nProxima task: " .. txtT) end)
+    pcall(function() ui.mostrarEvento:setTooltip("Mostrar em cima do personagem (Alt+3).\nProximo evento: " .. txtE) end)
+    pcall(function() ui.relogioTask:setTooltip("Proxima task: " .. txtT) end)
+    pcall(function() ui.relogioEvento:setTooltip("Proximo evento: " .. txtE) end)
+end)
+
+ui.evPrev.onClick = function() trocarEvento(-1) end
+ui.evNext.onClick = function() trocarEvento(1) end
+ui.evMaster.onClick = function() TD.alternarEventos() end
+ui.cbEventos.onClick = function() TD.alternarEventos() end
+TD.atualizarEventos()
+macro(500, function()
+    pintarToggle(ui.cbEventos, cfg.eventosAtivo, "EVENTOS: ON", "EVENTOS: OFF")
+    pintarToggle(ui.evMaster, cfg.eventosAtivo, "EVENTOS: ON", "EVENTOS: OFF")
+    if not w:isVisible() or TD.abaAtual ~= "EVENTOS" then return end
+    local ev = TD.evRun
+    ui.evEstado:setText(ev and "Estado: RODANDO" or ("Estado: parado" .. (TD.eventoChamado and " (chamado pela agenda)" or "")))
+    local fases = {SALA = "Aguardando na sala", BOSS = "Batendo no boss", TP = "Indo para o TP"}
+    ui.evFase:setText("Fase: " .. (ev and (fases[ev.fase] or ev.fase) or "-"))
+    ui.evBoss:setText("Boss: " .. (ev and ev.bossNome and (ev.bossIdx .. "/5 " .. ev.bossNome) or "-"))
+end)
 ui.abaTarget.onClick = function() TD.mostrarAba("TARGET") end
 
 TD.tgEditando = cfg.tarefa or "infernal"
@@ -3579,7 +4116,7 @@ local SECOES_TARGET = {
     {chave = "cave", botao = "tgSecCave", painel = "tgPainelCave", titulo = "CaveBot script", altura = 22},
 }
 function TD.alturaTarget()
-    local h = 200
+    local h = 218
     for _, sc in ipairs(SECOES_TARGET) do
         if cfg.tgAberto[sc.chave] ~= false then h = h + sc.altura + 2 end
     end
@@ -3766,9 +4303,9 @@ end
 campoNumero(ui.alcance, "alcance", 1, 10)
 
 TD.secoes = {}
-local function montarSecao(k)
+local function montarSecao(k, pai)
     local ag = cfg.agenda[k]
-    local s = g_ui.createWidget("TDSecao", ui.secoes)
+    local s = g_ui.createWidget("TDSecao", pai or ui.secoes)
     local sec = {
         nome = s:getChildById("nome"), ativo = s:getChildById("ativo"), label = s:getChildById("label"),
         dias = s:getChildById("dias"), horarios = s:getChildById("horarios"), janelas = s:getChildById("janelas"),
@@ -3776,7 +4313,7 @@ local function montarSecao(k)
         botoesDia = {},
         diaSel = TD.DIAS[os.date("*t").wday],
     }
-    sec.nome:setText("*  " .. TD.TAREFAS[k].titulo)
+    sec.nome:setText("*  " .. (TD.TAREFAS[k] or TD.EVENTOS[k]).titulo)
     sec.ativo.onClick = function()
         cfg.agenda[k].ativo = not cfg.agenda[k].ativo
         TD.atualizarAgenda()
@@ -3803,9 +4340,21 @@ local function montarSecao(k)
     TD.secoes[k] = sec
 end
 for _, k in ipairs(TD.AGENDAVEIS) do montarSecao(k) end
+for _, k in ipairs(TD.ORDEM_EVENTOS) do montarSecao(k, ui.secoesEv) end
+TD.agendaAba = "TASKS"
+function TD.trocarAgenda(aba)
+    TD.agendaAba = aba
+    if aba == "EVENTOS" then ui.painelTasks:hide() ui.painelEventos:show() else ui.painelEventos:hide() ui.painelTasks:show() end
+    pintarToggle(ui.agTasks, aba == "TASKS", "AGENDA TASKS", "AGENDA TASKS")
+    pintarToggle(ui.agEventos, aba == "EVENTOS", "AGENDA EVENTOS", "AGENDA EVENTOS")
+end
+ui.agTasks.onClick = function() TD.trocarAgenda("TASKS") end
+ui.agEventos.onClick = function() TD.trocarAgenda("EVENTOS") end
+TD.trocarAgenda("TASKS")
 
 ui.restaurar.onClick = function()
-    for _, k in ipairs(TD.AGENDAVEIS) do
+    local lista = TD.agendaAba == "EVENTOS" and TD.ORDEM_EVENTOS or TD.AGENDAVEIS
+    for _, k in ipairs(lista) do
         cfg.agenda[k] = TD.agendaPadrao()
         TD.secoes[k].label:setText("")
         TD.secoes[k].horarios:setText("")
@@ -3883,10 +4432,8 @@ function TD.preencherPerfis()
     ui.perfilSel.onOptionChange = function(_, texto)
         TD.perfilEditado = texto
         TD.gotoSel = nil
-        ui.perfilNome:setText(texto)
         TD.montarListaGotos()
     end
-    ui.perfilNome:setText(TD.perfilEditado)
 
     if ui.tgCombo then
         ui.tgCombo.onOptionChange = nil
@@ -3899,43 +4446,58 @@ function TD.preencherPerfis()
     end
 end
 
-local function nomeDigitado()
-    return tostring(ui.perfilNome:getText() or ""):gsub("^%s+", ""):gsub("%s+$", "")
+function TD.pedirTexto(titulo, inicial, cb)
+    if UI and UI.SinglelineEditorWindow then
+        local ok = pcall(function()
+            UI.SinglelineEditorWindow(inicial or "", {title = titulo, description = titulo}, function(t) cb(t) end)
+        end)
+        if ok then return end
+    end
+    TD.log("Esse bot nao tem a janela de texto.")
 end
 
+local function limparNome(t) return tostring(t or ""):gsub("^%s+", ""):gsub("%s+$", "") end
+
 ui.perfilNovo.onClick = function()
-    local nome = nomeDigitado()
-    if nome == "" or cfg.perfis[nome] then
-        TD.log("Digite um nome novo no campo ao lado da lista.")
-        return
-    end
-    cfg.perfis[nome] = {CAMINHO = {}, PRINCIPAL = {}, DP = {}}
-    TD.perfilEditado = nome
-    TD.log("CaveBot '" .. nome .. "' criado vazio.")
-    TD.preencherPerfis()
-    TD.montarListaGotos()
+    TD.pedirTexto("Nome do novo CaveBot", "", function(t)
+        local nome = limparNome(t)
+        if nome == "" or cfg.perfis[nome] then TD.log("Nome vazio ou ja existe.") return end
+        cfg.perfis[nome] = {CAMINHO = {}, PRINCIPAL = {}, DP = {}}
+        TD.perfilEditado = nome
+        TD.log("CaveBot '" .. nome .. "' criado vazio.")
+        TD.preencherPerfis()
+        TD.montarListaGotos()
+    end)
 end
 
 ui.perfilRenomear.onClick = function()
-    local nome, antigo = nomeDigitado(), TD.perfilEditado
-    if nome == "" or nome == antigo or cfg.perfis[nome] then
-        TD.log("Digite um nome diferente e que ainda não exista.")
-        return
-    end
-    cfg.perfis[nome] = cfg.perfis[antigo]
-    cfg.perfis[antigo] = nil
-    for k, v in pairs(cfg.perfilTarefa) do if v == antigo then cfg.perfilTarefa[k] = nome end end
-    if TD.perfilAtivo == antigo then TD.perfilAtivo = nome end
-    TD.perfilEditado = nome
-    TD.log("CaveBot '" .. antigo .. "' renomeado para '" .. nome .. "'.")
-    TD.preencherPerfis()
-    TD.montarListaGotos()
+    local antigo = TD.perfilEditado
+    TD.pedirTexto("Novo nome do CaveBot", antigo, function(t)
+        local nome = limparNome(t)
+        if nome == "" or nome == antigo or cfg.perfis[nome] then TD.log("Nome vazio, igual ou ja existe.") return end
+        cfg.perfis[nome] = cfg.perfis[antigo]
+        cfg.perfis[antigo] = nil
+        for k, v in pairs(cfg.perfilTarefa) do if v == antigo then cfg.perfilTarefa[k] = nome end end
+        if TD.perfilAtivo == antigo then TD.perfilAtivo = nome end
+        TD.perfilEditado = nome
+        TD.log("CaveBot '" .. antigo .. "' renomeado para '" .. nome .. "'.")
+        TD.preencherPerfis()
+        TD.montarListaGotos()
+    end)
 end
 
 ui.perfilExcluir.onClick = function()
     local nome = TD.perfilEditado
     if #TD.nomesPerfis() <= 1 then TD.log("Precisa ter pelo menos um CaveBot.") return end
     if TD.ativo and TD.perfilAtivo == nome then TD.log("Esse CaveBot está em uso pela task.") return end
+    if not TD.excluirConfirmaAte or os.time() > TD.excluirConfirmaAte then
+        TD.excluirConfirmaAte = os.time() + 3
+        ui.perfilExcluir:setText("CONFIRM")
+        TD.log("Clique de novo em 3s para excluir o CaveBot '" .. nome .. "'.")
+        return
+    end
+    TD.excluirConfirmaAte = nil
+    ui.perfilExcluir:setText("EXCLUIR")
     cfg.perfis[nome] = nil
     TD.perfilEditado = TD.nomesPerfis()[1]
     for k, v in pairs(cfg.perfilTarefa) do if v == nome then cfg.perfilTarefa[k] = TD.perfilEditado end end
@@ -3950,7 +4512,7 @@ TD.linhasGoto = {}
 local function textoGoto(i, g, atual)
     local w = tonumber(g[4])
     local extras = ""
-    if w then extras = extras .. "  w" .. w end
+    if w then extras = extras .. "  " .. (w / 1000) .. "s" end
     if g[5] and TD.NOME_LADO[g[5]] then extras = extras .. "  " .. TD.NOME_LADO[g[5]] end
     return string.format("%s%02d   %d, %d, %d%s", atual and ">> " or "   ", i, g[1], g[2], g[3], extras)
 end
@@ -4113,20 +4675,91 @@ macro(50, function()
     if okD then TD.gravDir = d end
 end)
 
-cfg.waitTodos = cfg.waitTodos or 0
-ui.gotoWait:setText(tostring(cfg.waitTodos))
+cfg.waitTodos = nil
+cfg.delayGoto = cfg.delayGoto or 0
+cfg.buscaMax = cfg.buscaMax or 150
+ui.gotoWait:setText(tostring(cfg.delayGoto))
 ui.gotoWait.onTextChange = function(_, t)
-    local v = tonumber(t)
-    if v and v >= 0 and v <= 60000 then cfg.waitTodos = math.floor(v) end
+    local v = tonumber((tostring(t):gsub(",", ".")))
+    if v and v >= 0 and v <= 60 then cfg.delayGoto = v end
 end
+ui.buscaMax:setText(tostring(cfg.buscaMax))
+ui.buscaMax.onTextChange = function(_, t)
+    local v = tonumber(t)
+    if v and v >= 10 and v <= 300 then cfg.buscaMax = math.floor(v) end
+end
+
+local LETRA_DIR = {N = "N", E = "E", S = "S", W = "W"}
+
+function TD.textoCaveBot(nome)
+    local perfil = cfg.perfis[nome]
+    if not perfil then return "" end
+    local linhas = {}
+    for _, r in ipairs({"CAMINHO", "PRINCIPAL", "DP"}) do
+        table.insert(linhas, "[" .. r .. "]")
+        for _, g in ipairs(perfil[r] or {}) do
+            local l = "goto:" .. g[1] .. "," .. g[2] .. "," .. g[3]
+            if g[4] then l = l .. " wait:" .. (g[4] / 1000) end
+            if g[5] then l = l .. " dir:" .. g[5] end
+            table.insert(linhas, l)
+        end
+        table.insert(linhas, "")
+    end
+    return table.concat(linhas, "\n")
+end
+
+function TD.lerTextoCaveBot(texto)
+    local perfil = {CAMINHO = {}, PRINCIPAL = {}, DP = {}}
+    local atual, total, secoes = nil, 0, 0
+    for linha in (tostring(texto or "") .. "\n"):gmatch("([^\r\n]*)\r?\n") do
+        local l = linha:gsub("^%s+", ""):gsub("%s+$", "")
+        local secao = l:upper():match("^%[?%s*(%u+)%s*%]?:?$")
+        if secao == "CIDADE" then secao = "PRINCIPAL" end
+        if secao and perfil[secao] then
+            atual = secao
+            secoes = secoes + 1
+        elseif l ~= "" then
+            local x, y, z = l:match("^goto:%s*(%d+)%s*,%s*(%d+)%s*,%s*(%d+)")
+            if x then
+                if not atual then return nil, "goto antes de [CAMINHO], [PRINCIPAL] ou [DP]" end
+                local w = tonumber(((l:match("wait:%s*([%d%.,]+)") or ""):gsub(",", ".")))
+                local d = l:upper():match("DIR:%s*(%u)")
+                table.insert(perfil[atual], {tonumber(x), tonumber(y), tonumber(z),
+                    w and math.floor(w * 1000) or nil, LETRA_DIR[d or ""]})
+                total = total + 1
+            end
+        end
+    end
+    if secoes == 0 then return nil, "nenhuma secao [CAMINHO], [PRINCIPAL] ou [DP]" end
+    return perfil, total
+end
+
+ui.cbEditar.onClick = function()
+    local nome = TD.perfilEditado
+    local texto = TD.textoCaveBot(nome)
+    if not (UI and UI.MultilineEditorWindow) then TD.log("Esse bot nao tem o editor de texto.") return end
+    pcall(function()
+        UI.MultilineEditorWindow(texto, {title = "CaveBot da task: " .. nome, width = 420,
+            description = "[CAMINHO], [PRINCIPAL] e [DP]. Ex.: goto:32350,32225,6 wait:0.5 dir:N"}, function(novo)
+            local perfil, total = TD.lerTextoCaveBot(novo)
+            if not perfil then TD.log("Editor: " .. total .. ". Nada foi alterado.") return end
+            for _, r in ipairs({"CAMINHO", "PRINCIPAL", "DP"}) do cfg.perfis[nome][r] = perfil[r] end
+            TD.gotoSel = nil
+            TD.montarListaGotos()
+            TD.log("CaveBot '" .. nome .. "' salvo pelo editor: " .. total .. " gotos (" ..
+                #perfil.CAMINHO .. " caminho, " .. #perfil.PRINCIPAL .. " principal, " .. #perfil.DP .. " DP).")
+        end)
+    end)
+end
+
 TD.ladoEdicao = nil
 TD.waitEdicao = nil
 local ORDEM_LADOS = {false, "N", "E", "S", "W"}
-local ORDEM_WAIT = {false, 0, 100, 150, 200, 300, 500, 1000, 2000, 3000}
+local ORDEM_WAIT = {false, 0, 500, 1000, 1500, 2000, 3000, 5000}
 function TD.pintarLado()
     ui.gotoLado:setText(TD.ladoEdicao and TD.NOME_LADO[TD.ladoEdicao] or "NEUTRO")
     ui.gotoLado:setColor(TD.ladoEdicao and "#FFD24A" or "#AAAAAA")
-    ui.gotoWaitBtn:setText(TD.waitEdicao and (TD.waitEdicao .. " ms") or "PADRAO")
+    ui.gotoWaitBtn:setText(TD.waitEdicao and ((TD.waitEdicao / 1000) .. "s") or "PADRAO")
     ui.gotoWaitBtn:setColor(TD.waitEdicao and "#FFD24A" or "#AAAAAA")
 end
 function TD.carregarEdicao()
@@ -4157,7 +4790,7 @@ ui.gotoWaitAplicar.onClick = function()
     g[4] = TD.waitEdicao
     g[5] = TD.ladoEdicao
     TD.log("Goto " .. TD.gotoSel .. ": direcao " .. (g[5] and TD.NOME_LADO[g[5]] or "NEUTRO") ..
-        ", wait " .. (g[4] and (g[4] .. " ms") or ("padrao " .. cfg.waitTodos .. " ms")) .. ".")
+        ", wait " .. (g[4] and ((g[4] / 1000) .. "s") or ("padrao " .. cfg.delayGoto .. "s")) .. ".")
     TD.montarListaGotos()
 end
 
@@ -4185,12 +4818,15 @@ macro(1000, function()
         TD.clearConfirmaAte = nil
         ui.gotoClear:setText("CLEAR")
     end
+    if TD.excluirConfirmaAte and os.time() > TD.excluirConfirmaAte then
+        TD.excluirConfirmaAte = nil
+        ui.perfilExcluir:setText("EXCLUIR")
+    end
 end)
 
 function TD.atualizarCaveBot()
     ui.cbAgora:setText("CaveBot do bot agora: " .. (TD.cavebotAtual() or "?"))
-    ui.cbTask:setText(TD.ativo and "TASK: ON" or "TASK: OFF")
-    ui.cbTask:setColor(TD.ativo and "#55FF55" or "#FF7777")
+    pintarToggle(ui.cbTask, TD.ativo, "TASK: ON", "TASK: OFF")
 end
 
 ui.pkFuga:setText(cfg.pkHunt.labelFuga)
@@ -4330,7 +4966,11 @@ function TD.alternarPainel()
     if w:isVisible() then w:hide() else w:show() w:raise() w:focus() end
 end
 addButton("TaskDemonBtn", "Tasks", TD.alternarPainel)
-onKeyPress(function(keys) if keys == "Ctrl+F4" then TD.alternarPainel() end end)
+onKeyPress(function(keys)
+    if keys == "Alt+1" then TD.alternarPainel()
+    elseif keys == "Alt+2" then TD.alternarMostrar("task")
+    elseif keys == "Alt+3" then TD.alternarMostrar("evento") end
+end)
 
 function TD.atualizarStatus()
     local prog = TD.progresso()
