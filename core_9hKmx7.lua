@@ -1,5 +1,4 @@
 setDefaultTab("Main")
-
 TaskDemon = TaskDemon or {}
 
 if taskDemonWindow then
@@ -257,7 +256,16 @@ function TD.protegido(nome, f)
         end
     end
 end
-local function marcarTexto(c, texto, cor)
+function TD.ehDaTask(c)
+    local ok, nome = pcall(function() return c:getName():lower() end)
+    if not ok then return false end
+    for _, t in pairs(TD.TAREFAS) do
+        if t.nome:lower() == nome then return true end
+    end
+    return false
+end
+
+function TD.marcarTexto(c, texto, cor)
     if not c or not c.setText then return end
     local okI, id = pcall(function() return c:getId() end)
     local chave = okI and id or tostring(c)
@@ -268,6 +276,7 @@ local function marcarTexto(c, texto, cor)
     TD.textoCache[chave] = {t = novo, quando = agoraT}
     pcall(function() c:setText(texto, cor) end)
 end
+local marcarTexto = TD.marcarTexto
 
 function TD.entrarNaRota(nome)
     local trocou = TD.rota ~= nome
@@ -800,7 +809,7 @@ function TD.confirmarHit(c, origem)
     local umHit = modoT == "1" or (modoT == "50" and TD.alvo == c and (TD.alvoHpInicial or 100) < 50)
     if not umHit and not (TD.focoTrap and TD.alvo == c) and origem ~= "vida" then return end
     TD.tagueados[id] = {nome = c:getName(), hora = os.time()}
-    marcarTexto(c, "ATINGIDO", "#55FF55")
+    TD.marcarTexto(c, "ATINGIDO", "#55FF55")
     if TD.focoTrap and TD.alvo == c then return end
     TD.alvo = nil
     TD.saiuDaRota = true
@@ -1309,10 +1318,12 @@ function TD.tentarBicar(p, destino)
     table.sort(candidatos, function(a, b) return a.nota > b.nota end)
     for _, cand in ipairs(candidatos) do
         if not cand.c:isPlayer() then
-            TD.focarMonstro(cand.c, cand.dir, cand.pos)
-            return true
+            if TD.ativo and TD.ehDaTask(cand.c) then
+                TD.focarMonstro(cand.c, cand.dir, cand.pos)
+                return true
+            end
         end
-        local para = TD.melhorTileParaBicar(cand.pos, p, destino, setCaminho)
+        local para = cand.c:isPlayer() and TD.melhorTileParaBicar(cand.pos, p, destino, setCaminho)
         if para then
             g_game.move(cand.c, para, 1)
             TD.ultimoBico = agoraMs()
@@ -1589,6 +1600,50 @@ function TD.resetarPK()
     TD.log("PK resetado.")
 end
 
+function TD.macrosExternos()
+    return {
+        ["Auto Exori/SD"] = ubatuba,
+        ["Auto Rune"] = autorune,
+        ["Exori San"] = exorisan,
+        ["Exori Con"] = exoricon,
+    }
+end
+
+function TD.pausarExternos()
+    if TD.externosAntes then return end
+    TD.externosAntes = {}
+    local nomes = {}
+    for nome, m in pairs(TD.macrosExternos()) do
+        if type(m) == "table" and m.isOn and m.setOn then
+            local ok, ligado = pcall(function() return m.isOn() end)
+            if ok and ligado then
+                TD.externosAntes[nome] = true
+                pcall(function() m.setOn(false) end)
+                table.insert(nomes, nome)
+            end
+        end
+    end
+    if #nomes > 0 then TD.log("Target do bot pausado na task: " .. table.concat(nomes, ", ") .. ".") end
+end
+
+function TD.voltarExternos()
+    if not TD.externosAntes then return end
+    local lista = TD.macrosExternos()
+    for nome in pairs(TD.externosAntes) do
+        local m = lista[nome]
+        if type(m) == "table" and m.setOn then pcall(function() m.setOn(true) end) end
+    end
+    TD.externosAntes = nil
+end
+
+macro(1000, function()
+    if TD.ativo and not TD.cfgTarget().semMagia then
+        TD.pausarExternos()
+    else
+        TD.voltarExternos()
+    end
+end)
+
 function TD.ligar()
     if TD.ativo then return end
     TD.ativo = true
@@ -1617,6 +1672,7 @@ function TD.desligar(motivo)
     if TD.marcarQuadrado then TD.marcarQuadrado(nil) end
     if not TD.ativo then return end
     TD.ativo = false
+    TD.voltarExternos()
     TD.alvo = nil
     TD.fugindo = false
     TD.voltando = false
@@ -1740,7 +1796,7 @@ macro(50, TD.protegido("alvos", function()
             local info = TD.analisarTile(tp)
             if info.tipo == "livre" then
                 livres = livres + 1
-            elseif info.tipo == "monstro" and info.criatura then
+            elseif info.tipo == "monstro" and info.criatura and TD.ehDaTask(info.criatura) then
                 local dd = destino and math.sqrt((tp.x - destino.x) ^ 2 + (tp.y - destino.y) ^ 2) or 0
                 if dd < melhorD then melhor, melhorD = info.criatura, dd end
             end
@@ -1884,9 +1940,9 @@ macro(50, TD.protegido("alvos", function()
         local okI, id = pcall(function() return c:getId() end)
         if okI and not marcados[id] then
             if TD.tagueados[id] then
-                marcarTexto(c, "ATINGIDO", "#55FF55")
+                TD.marcarTexto(c, "ATINGIDO", "#55FF55")
             else
-                marcarTexto(c, "", "#FFFFFF")
+                TD.marcarTexto(c, "", "#FFFFFF")
             end
         end
     end
@@ -2099,7 +2155,7 @@ macro(200, function()
     end
     if texto ~= TD.textoPlayer then
         TD.textoPlayer = texto
-        marcarTexto(player, texto, cor)
+        TD.marcarTexto(player, texto, cor)
     end
 end)
 
@@ -3657,7 +3713,7 @@ function TD.resetarTarefa(k)
     TD.vezesPulado = {}
     TD.mortesContadas = {}
     TD.alvoExtra = nil
-    if g_game.cancelAttack then g_game.cancelAttack() end
+    if TD.ativo and g_game.cancelAttack then g_game.cancelAttack() end
     TD.alvo = nil
     TD.alvoHpInicial, TD.alvoHpId, TD.alvoHpUlt = nil, nil, nil
     TD.aproximandoDesde = nil
