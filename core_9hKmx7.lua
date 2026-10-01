@@ -78,7 +78,7 @@ cfg.pkHistorico = nil
 
 local function copiarRota(r)
     local c = {}
-    for i, w in ipairs(r) do c[i] = {w[1], w[2], w[3], w[4], w[5]} end
+    for i, w in ipairs(r) do c[i] = {w[1], w[2], w[3], w[4] or false, w[5] or false} end   -- false, nunca buraco (o vBot nao salva lista com buraco)
     return c
 end
 TaskDemon.copiarRota = copiarRota
@@ -90,6 +90,78 @@ local function copiarPerfil(p)
     return c
 end
 TaskDemon.copiarPerfil = copiarPerfil
+
+-- PERFIS POR PERSONAGEM: arquivo proprio /TaskDemon/<personagem>.json, fora da pasta bot (o vBot lista tudo
+-- que esta em /bot/ como config de bot).
+-- O storage do vBot e separado por config (bot/<config>/storage/...): codigo novo em outra config
+-- abria um storage sem os perfis e sobravam so os 2 padrao. Com o arquivo, os perfis valem em qualquer config.
+-- vao pro arquivo do personagem (/TaskDemon/<char>.json), que SEMPRE salva e vale em qualquer bot/config:
+-- CaveBots do painel + agenda (horarios/labels) + CaveBot de cada task/evento + label ao terminar de cada evento.
+-- (o storage do vBot pode falhar ao salvar; ai na troca de painel/reload voltava a agenda antiga)
+TaskDemon.CAMPOS_ARQ = {"perfis", "agenda", "perfilTarefa", "eventoPerfil", "evLabelFimPor"}
+function TaskDemon.arquivoPerfis()
+    local ok, nome = pcall(function() return player:getName() end)
+    if not ok or type(nome) ~= "string" or nome == "" then return nil end
+    nome = nome:gsub("%s*%[%d+%]%s*$", "")   -- neste servidor o nome vem com o nivel: "Fulano [30]"
+    return "/TaskDemon/" .. nome:lower():gsub("[^%w]+", "_"):gsub("_+$", "") .. ".json"
+end
+-- O json do vBot (corelib/json.lua) recusa lista com buraco ("sparse array") e ai NAO salva o storage inteiro.
+-- semBuracos tapa buracos com false em toda lista do Task Demon (o codigo trata false igual a vazio).
+-- Tabela com chave numerica muito espalhada ou misturada com texto nao da pra tapar: so avisa onde esta.
+function TaskDemon.semBuracos(t, caminho, vistos, problemas, soAvisar)
+    vistos, problemas = vistos or {}, problemas or {}
+    if type(t) ~= "table" or vistos[t] then return problemas end
+    vistos[t] = true
+    local maior, qtd, temTexto = 0, 0, false
+    for k, v in pairs(t) do
+        if type(k) == "number" then
+            qtd = qtd + 1
+            if k > maior then maior = k end
+        else
+            temTexto = true
+        end
+        TaskDemon.semBuracos(v, caminho .. "." .. tostring(k), vistos, problemas, soAvisar)
+    end
+    if qtd > 0 and (temTexto or maior ~= math.floor(maior) or maior > qtd * 2 + 8) then
+        table.insert(problemas, caminho)
+    elseif qtd > 0 and maior > qtd then
+        if soAvisar then
+            table.insert(problemas, caminho)
+        else
+            for i = 1, maior do if t[i] == nil then t[i] = false end end
+        end
+    end
+    return problemas
+end
+function TaskDemon.textoPerfis()
+    local dados = {}
+    for _, k in ipairs(TaskDemon.CAMPOS_ARQ) do dados[k] = cfg[k] end
+    TaskDemon.semBuracos(dados, "arquivo")
+    local ok, txt = pcall(function() return json.encode(dados) end)
+    return ok and txt or nil
+end
+do
+    local arq = TaskDemon.arquivoPerfis()
+    local ok, dados = pcall(function()
+        if not (arq and g_resources and g_resources.fileExists(arq)) then return nil end
+        return json.decode(g_resources.readFileContents(arq))
+    end)
+    local temPerfil = false   -- (o vBot nao tem a funcao next)
+    if ok and type(dados) == "table" and type(dados.perfis) == "table" then
+        for _ in pairs(dados.perfis) do temPerfil = true break end
+    end
+    if temPerfil then
+        for _, k in ipairs(TaskDemon.CAMPOS_ARQ) do
+            if type(dados[k]) == "table" then cfg[k] = dados[k] end
+        end
+        TaskDemon.avisoPerfis = "Perfis de CaveBot carregados de " .. arq .. "."
+        cfg.padraoRemovido = true   -- a limpeza antiga de rotas padrao NAO pode rodar em cima do arquivo
+    elseif arq then
+        TaskDemon.avisoPerfis = "Perfis de CaveBot: criando " .. arq .. " (vale pra qualquer config deste personagem)."
+    else
+        TaskDemon.avisoPerfis = "Perfis de CaveBot: nao achei o nome do personagem; usando so o storage da config."
+    end
+end
 
 if type(cfg.perfis) ~= "table" then
     cfg.perfis = {}
@@ -125,6 +197,7 @@ for _, p in pairs(cfg.perfis) do
 end
 
 cfg.perfilTarefa = cfg.perfilTarefa or {infernal = "Task Demon", goshnar = "Task Mega", dragon = "Task Demon"}
+TaskDemon.buracosNaCarga = TaskDemon.semBuracos(cfg, "storage.TaskDemon")
 
 function TaskDemon.nomesPerfis()
     local l = {}
@@ -144,19 +217,39 @@ cfg.cb = cfg.cb or {}
 cfg.cb.hunt = cfg.cb.hunt or ""
 cfg.cb.task, cfg.cb.ativo, cfg.cb.labelHunt = nil, nil, nil
 
-function TaskDemon.agendaPadrao()
-    return {ativo = false, label = "",
-            horariosDia = {dom = "", seg = "", ter = "", qua = "", qui = "", sex = "", sab = ""}}
+-- agenda padrao dos EVENTOS (todos os dias, label "tasks", DESATIVADOS: a pessoa ativa se quiser). So entra quando o personagem ainda nao
+-- tem agenda daquele evento ou no botao Restaurar; o que a pessoa mudar fica salvo e vale.
+TaskDemon.AGENDA_EVENTOS_PADRAO = {
+    ev_snowball  = {horarios = "14:27", label = "tasks"},
+    ev_island    = {horarios = "12:57, 18:57, 23:27", label = "tasks"},
+    ev_firestorm = {horarios = "12:27, 18:27, 23:27", label = "tasks"},
+    ev_zombie    = {horarios = "13:27, 19:27, 22:57", label = "tasks"},
+}
+function TaskDemon.agendaPadrao(k)
+    local p = k and TaskDemon.AGENDA_EVENTOS_PADRAO[k]
+    local h = p and p.horarios or ""
+    return {ativo = false, label = p and p.label or "",
+            horariosDia = {dom = h, seg = h, ter = h, qua = h, qui = h, sex = h, sab = h}}
 end
 TaskDemon.EVENTOS = {
-    ev_snowball  = {titulo = "Snowball War (em breve)", curto = "Snowball"},
+    ev_snowball  = {titulo = "Snowball War", curto = "Snowball", pronto = true},
     ev_island    = {titulo = "Island Of Elementals", curto = "Island", pronto = true},
-    ev_firestorm = {titulo = "FireStorm (em breve)", curto = "FireStorm"},
-    ev_zombie    = {titulo = "Zombie (em breve)", curto = "Zombie"},
+    ev_firestorm = {titulo = "FireStorm", curto = "FireStorm", pronto = true},
+    ev_zombie    = {titulo = "Zombie", curto = "Zombie", pronto = true},
 }
 TaskDemon.ORDEM_EVENTOS = {"ev_snowball", "ev_island", "ev_firestorm", "ev_zombie"}
 for _, k in ipairs(TaskDemon.ORDEM_EVENTOS) do
-    cfg.agenda[k] = cfg.agenda[k] or TaskDemon.agendaPadrao()
+    -- padrao entra 1x: sem agenda, ou agenda VAZIA nunca configurada (criada vazia pelas versoes antigas).
+    -- Marca ag.padrao: se a pessoa apagar tudo depois, nao volta sozinho (vale o que a pessoa decidiu).
+    local ag = cfg.agenda[k]
+    local vazia = not ag or (not ag.ativo and (ag.label or "") == "" and not ag.padrao)
+    if vazia and ag and type(ag.horariosDia) == "table" then
+        for _, h in pairs(ag.horariosDia) do if tostring(h):match("%S") then vazia = false end end
+    end
+    if vazia then
+        cfg.agenda[k] = TaskDemon.agendaPadrao(k)
+        cfg.agenda[k].padrao = true
+    end
 end
 cfg.evLabelFim = cfg.evLabelFim or "inicio"
 
@@ -200,8 +293,76 @@ TD.origemAgenda = nil
 TD.targetBotEstava = nil
 
 function TD.log(t)
+    -- com evento rodando, as mensagens (rota, teleporte...) vao para a aba EVENTOS
+    if TD.evRun and not TD.ativo then return TD.logEv(t) end
     TD.evento = os.date("%H:%M:%S") .. " - " .. t
     print("[Task Demon] " .. t)
+end
+-- versao do codigo: aparece no log ao carregar, pra confirmar que o vBot esta rodando o arquivo novo
+-- SUBIR a cada entrega (1.0, 1.1, 1.2 ...): aparece no titulo do painel "TASKS 1.0" e no log ao carregar
+TD.VERSAO = "2.3"
+TD.log("Task Demon versao " .. TD.VERSAO .. " carregado.")
+-- aviso dos perfis: so no terminal do cliente (o usuario nao quer isso no log do painel)
+if TaskDemon.avisoPerfis then print("[Task Demon] " .. TaskDemon.avisoPerfis) end
+for _, onde in ipairs(TaskDemon.buracosNaCarga or {}) do TD.log("AVISO: tabela que o vBot nao consegue salvar em " .. onde) end
+
+-- rede de seguranca: tapa buracos no storage antes do vBot salvar (o vBot salva sozinho de tempos em tempos)
+TD.avisadosBuraco = {}
+macro(2000, function()
+    local problemas = TaskDemon.semBuracos(cfg, "storage.TaskDemon")
+    -- o resto do storage e de outros scripts: nao mexe, so avisa onde esta o que trava o save
+    local vistos = {[cfg] = true}
+    for k, v in pairs(storage) do
+        TaskDemon.semBuracos(v, "storage." .. tostring(k), vistos, problemas, true)
+    end
+    for _, onde in ipairs(problemas) do
+        if not TD.avisadosBuraco[onde] then
+            TD.avisadosBuraco[onde] = true
+            TD.log("AVISO: o vBot nao consegue salvar " .. onde .. (onde:find("^storage%.TaskDemon") and "" or " (e de OUTRO script, nao do Task Demon)"))
+        end
+    end
+    -- teste definitivo: o mesmo json.encode que o vBot usa pra gravar o storage. Se falhar, o vBot NAO grava
+    -- nada (nem o codigo colado no editor): no proximo reload volta o codigo e os dados antigos do disco.
+    -- (storage tem ~300KB com o codigo do editor: testa a cada 10s, nao a cada 2s)
+    if os.time() < (TD.proxTesteStorage or 0) then return end
+    TD.proxTesteStorage = os.time() + 10
+    local ok = pcall(json.encode, storage)
+    if ok then TD.erroStorage = nil return end
+    local culpadas = {}
+    for k, v in pairs(storage) do
+        local okK, erro = pcall(json.encode, v)
+        if not okK then table.insert(culpadas, tostring(k) .. " (" .. tostring(erro):sub(1, 60) .. ")") end
+    end
+    local msg = "ERRO: o vBot NAO esta salvando o storage. Culpado: " .. (#culpadas > 0 and table.concat(culpadas, ", ") or "?") ..
+        ". Codigo colado no editor volta ao antigo no reload!"
+    if msg ~= TD.erroStorage or os.time() - (TD.erroStorageMs or 0) > 30 then
+        TD.erroStorage, TD.erroStorageMs = msg, os.time()
+        TD.log(msg)
+    end
+end)
+
+-- grava os perfis no arquivo do personagem quando mudarem (confere a cada 5s)
+TD.ultimoArquivo = nil
+macro(5000, function()
+    local arq = TaskDemon.arquivoPerfis()
+    if not (arq and g_resources and g_resources.writeFileContents) then return end
+    local txt = TaskDemon.textoPerfis()
+    if not txt or txt == TD.ultimoArquivo then return end
+    if g_resources.makeDir and g_resources.directoryExists and not g_resources.directoryExists("/TaskDemon") then
+        pcall(g_resources.makeDir, "/TaskDemon")
+    end
+    local ok, err = pcall(g_resources.writeFileContents, arq, txt)
+    if ok then
+        TD.ultimoArquivo = txt
+    elseif not TD.avisouErroArquivo then
+        TD.avisouErroArquivo = true
+        TD.log("ERRO ao salvar perfis em " .. arq .. ": " .. tostring(err))
+    end
+end)
+TD.eventoEv = "-"
+function TD.logEv(t)
+    TD.eventoEv = os.date("%H:%M:%S") .. " - " .. t
+    print("[Eventos] " .. t)
 end
 
 function TD.progresso() return cfg.prog[cfg.tarefa] or 0 end
@@ -241,7 +402,7 @@ local function dist(a, b)
     return math.max(math.abs(a.x - b.x), math.abs(a.y - b.y))
 end
 
-TD.PORTAIS = {[24733] = true, [24731] = true}
+TD.PORTAIS = {[24733] = true, [24731] = true, [1949] = true}
 TD.LADOS = {N = North or 0, E = East or 1, S = South or 2, W = West or 3}
 TD.NOME_LADO = {N = "NORTH", E = "EAST", S = "SOUTH", W = "WEST"}
 local function rotaAtual()
@@ -318,7 +479,7 @@ local TECLAS_ANDAR = {
 }
 
 local function teclaManual(keys)
-    if not TD.ativo then return end
+    if not TD.ativo and not TD.evRun then return end
     if TECLAS_ANDAR[keys] then
         TD.manualAte = agoraMs() + TD.MS_MANUAL
     end
@@ -524,6 +685,17 @@ function TD.proximoWp()
     end
 
     if TD.rota == "CAMINHO" and TD.wp > #rota then
+        -- Island/Zombie/FireStorm/Snowball: o CAMINHO so termina entrando no TP (quem troca de fase e a deteccao da
+        -- sala/arena). Se foi empurrado ou o passo pro TP nao pegou, repete o ultimo goto em vez de ir pra PRINCIPAL.
+        local tipoEv = TD.evRun and TD.evRun.rota and TD.evRun.tipo
+        if (tipoEv == "island" or tipoEv == "zombie" or tipoEv == "firestorm" or tipoEv == "snowball") and #rota > 0 then
+            TD.wp = #rota
+            if not TD.evRun.avisouRepetir then
+                TD.evRun.avisouRepetir = true
+                TD.logEv("Ainda nao entrou no TP: repetindo o ultimo goto do CAMINHO ate entrar.")
+            end
+            return
+        end
         if #(TD.ROTAS.PRINCIPAL or {}) == 0 then
             TD.log("CAMINHO concluido, mas a PRINCIPAL esta vazia. Parado aqui.")
             TD.rota = "PRINCIPAL"
@@ -558,6 +730,15 @@ end
 
 function TD.escolherRotaInicial()
     TD.rota = ""
+    -- Evento com TP (Island/Zombie/FireStorm/Snowball): sempre comeca pelo CAMINHO, mesmo parado na frente do TP.
+    -- Antes, se algum goto da PRINCIPAL ficava a 12 sqm, ia direto pra PRINCIPAL sem ter entrado no TP.
+    -- Quem passa pra dentro e a deteccao da sala/arena.
+    local tipoEv = TD.evRun and TD.evRun.rota and TD.evRun.tipo
+    local eventoTp = tipoEv == "island" or tipoEv == "zombie" or tipoEv == "firestorm" or tipoEv == "snowball"
+    if eventoTp and #(TD.ROTAS.CAMINHO or {}) > 0 then
+        TD.entrarNaRota("CAMINHO")
+        return
+    end
     if #(TD.ROTAS.PRINCIPAL or {}) > 0 and (TD.pertoDaRota("PRINCIPAL", 12) or #(TD.ROTAS.CAMINHO or {}) == 0) then
         TD.entrarNaRota("PRINCIPAL")
     else
@@ -588,16 +769,36 @@ local DIR_DELTA = {
     ["1,-1"] = NorthEast or 4, ["1,1"] = SouthEast or 5, ["-1,1"] = SouthWest or 6, ["-1,-1"] = NorthWest or 7,
 }
 
+-- TP de entrada dos eventos: so aparece quando o evento abre
+TD.TP_EVENTO = {x = 32350, y = 32230, z = 7}
+-- entrada dos EVENTOS (todos usam o mesmo TP): 3 gotos, o ultimo pisa pro SUL em cima do TP.
+-- Saiu do lugar / foi empurrado / TP fechado: repete o ultimo goto ate entrar (TD.proximoWp).
+TD.EVENTO_ESPERA_TP_MIN = 8   -- comecou o evento e nao entrou no TP nesse tempo = TP fechou: encerra e volta
+TD.ENTRADA_EVENTO = {
+    {32346, 32227, 7, false, false},
+    {32348, 32228, 7, false, false},
+    {32350, 32229, 7, false, "S"},
+}
+function TD.esperandoTpEvento(w, lado)
+    local tp = TD.TP_EVENTO
+    local alvo = {x = w[1], y = w[2], z = w[3]}
+    local v = lado ~= nil and VETOR[lado]
+    if v then alvo = {x = alvo.x + v[1], y = alvo.y + v[2], z = alvo.z} end
+    if not mesmaPos(alvo, tp) or dist(player:getPosition(), tp) > 1 then return false end
+    local tile = g_map and g_map.getTile(tp)
+    local ok, itens = pcall(function() return tile:getItems() end)
+    for _, it in ipairs(ok and itens or {}) do
+        if it:getId() == 1949 then return false end
+    end
+    return true
+end
+
 function TD.andarRota()
     local p = player:getPosition()
     if not p then return end
     local rotaA = rotaAtual()
     if #rotaA == 0 then
         TD.estado = TD.semRota and "SEM ROTA (ANDANDO NA MAO)" or ("SEM GOTOS NA ROTA " .. tostring(TD.rota))
-        return
-    end
-    if not rotaA or #rotaA == 0 then
-        TD.estado = "ROTA " .. TD.rota .. " VAZIA"
         return
     end
     local t = agoraMs()
@@ -635,6 +836,8 @@ function TD.andarRota()
     local espera = tonumber(wAtual[4]) or math.floor((cfg.delayGoto or 0) * 1000)
     local lado = TD.LADOS[wAtual[5] or ""]
     local exato = TD.gotoExato(TD.wp) or lado ~= nil
+
+    -- (removido: esperar o TP do evento abrir. O lado marcado no goto e sempre obedecido.)
 
     if TD.esperaAte and TD.esperaWp == TD.wp then
         if t < TD.esperaAte then
@@ -727,7 +930,7 @@ function TD.andarRota()
     end
     TD.ultimaPos = p
 
-    if TD.ativo and TD.rota ~= "" then TD.irPara(wpPos(TD.wp)) end
+    if (TD.ativo or TD.evRun) and TD.rota ~= "" then TD.irPara(wpPos(TD.wp)) end
 end
 
 function TD.listarAlvos()
@@ -1003,7 +1206,7 @@ macro(50, function()
             TD.log("No PZ. Esperando " .. cfg.pkHunt.tempo .. ".")
             return
         end
-        if TargetBot and TargetBot.isOn and TargetBot.isOn() and not TD.tbDesligadoPorFoco then
+        if TargetBot and TargetBot.isOn and TargetBot.isOn() then
             TargetBot.setOff()
         end
         if not TD.focoMonstro and g_game.getAttackingCreature() and g_game.cancelAttack then
@@ -1168,7 +1371,7 @@ end
 
 function TD.analisarTileReal(pos)
     local tile = g_map.getTile(pos)
-    if not tile then return {tipo = "parede"} end
+    if not tile then return {tipo = "parede", desconhecido = true} end
     for _, it in ipairs(tile:getItems() or {}) do
         local b = TD.BARREIRAS[it:getId()]
         if b then
@@ -1332,10 +1535,10 @@ function TD.tentarBicar(p, destino)
     table.sort(candidatos, function(a, b) return a.nota > b.nota end)
     for _, cand in ipairs(candidatos) do
         if not cand.c:isPlayer() then
-            if TD.ativo and TD.ehDaTask(cand.c) then
-                TD.focarMonstro(cand.c, cand.dir, cand.pos)
-                return true
-            end
+            -- so chega aqui na fuga de PK (PK atacou / escudo azul na quantidade / MW + inimigo colado) e trapado:
+            -- bate no monstro que bloqueia, qualquer nome, pra abrir caminho. Fora disso o PK nao bate em bicho.
+            TD.focarMonstro(cand.c, cand.dir, cand.pos)
+            return true
         end
         local para = cand.c:isPlayer() and TD.melhorTileParaBicar(cand.pos, p, destino, setCaminho)
         if para then
@@ -1350,10 +1553,7 @@ function TD.tentarBicar(p, destino)
 end
 
 function TD.focarMonstro(c, dir, pos)
-    if TargetBot and TargetBot.isOn and TargetBot.isOn() then
-        TargetBot.setOff()
-        TD.tbDesligadoPorFoco = true
-    end
+    -- o painel bate sozinho: nao liga/desliga TargetBot do vBot
     if g_game.getAttackingCreature() ~= c then g_game.attack(c) end
     TD.focoMonstro = c
     TD.bicoDir, TD.bicoPos, TD.bicoAte = dir, pos, agoraMs() + 6000
@@ -1361,11 +1561,10 @@ function TD.focarMonstro(c, dir, pos)
 end
 
 function TD.soltarFoco()
+    local foco = TD.focoMonstro
     TD.focoMonstro = nil
-    if TD.tbDesligadoPorFoco then
-        TD.tbDesligadoPorFoco = nil
-        if TargetBot and TargetBot.setOn then TargetBot.setOn() end
-    end
+    -- para de bater so se ainda estava batendo no bicho do foco (nao mexe no ataque da task)
+    if foco and g_game.getAttackingCreature() == foco and g_game.cancelAttack then pcall(g_game.cancelAttack) end
 end
 
 function TD.jogarMW(p, destino)
@@ -1442,6 +1641,13 @@ end
 
 function TD.avaliarFuga()
     if not g_map then return end
+    -- evento: nada de anti-trap/PK (ele "bica" qualquer monstro que bloqueia). No evento o painel so ataca
+    -- os bosses do Island pelo nome; Zombie/Snowball/FireStorm nao atacam ninguem.
+    if TD.evRun then
+        if TD.focoMonstro and TD.soltarFoco then TD.soltarFoco() end
+        TD.bicoAte, TD.statusFuga = nil, "Livre (evento)"
+        return
+    end
     local fugindo = (TD.ativo and TD.fugindo) or TD.pkFase == "FUGINDO" or agoraMs() < TD.perigoAte
     local p = player:getPosition()
     if not p then return end
@@ -1573,10 +1779,12 @@ function TD.vigiarEscudo()
     if not (CaveBot and CaveBot.isOn and CaveBot.isOn()) then return end
     local p = player:getPosition()
     if not p or TD.emPz() then return end
-    local total, primeiro = TD.contarGuildAzul(p, true)
+    -- regra: so corre com a QUANTIDADE configurada de escudo azul perto (trapado por bicho nao conta).
+    -- Marca como inimigo so quando dispara (antes marcava 1 escudo azul qualquer e ligava a fuga sem PK).
+    local total, primeiro = TD.contarGuildAzul(p, false)
     if not primeiro then return end
-    local encurralado = total >= 1 and TD.areaLivre(p, nil, 12) < 4
-    if total >= cfg.fuga.escudoQtd or encurralado then
+    if total >= cfg.fuga.escudoQtd then
+        TD.contarGuildAzul(p, true)
         TD.log(total .. " de escudo azul perto! Correndo.")
         TD.pkHuntAtacado(primeiro:getName())
     end
@@ -1621,13 +1829,19 @@ TD.ISLAND = {
     tp = 1949,
 }
 
+-- sala cadastrada OU a aprendida (onde o TP do evento te deixou da ultima vez: cfg.islandSala)
 function TD.naSalaIsland(p)
-    local s = TD.ISLAND.sala
-    return p and p.z == s.z and p.x >= s.x1 and p.x <= s.x2 and p.y >= s.y1 and p.y <= s.y2
+    if not p then return false end
+    -- perto do TP do evento NUNCA e a sala (uma sala aprendida errada fazia ele achar que ja tinha entrado)
+    if dist(p, TD.TP_EVENTO) <= 20 then return false end
+    for _, s in ipairs({TD.ISLAND.sala, cfg.islandSala}) do
+        if s and p.z == s.z and p.x >= s.x1 and p.x <= s.x2 and p.y >= s.y1 and p.y <= s.y2 then return true end
+    end
+    return false
 end
 
 function TaskDemon.checkinEvento()
-    if not cfg.eventosAtivo or TD.evRun or TD.ativo then return true end
+    if TD.evRun or TD.ativo then return true end
     local hoje = os.date("%Y-%m-%d")
     for _, k in ipairs(TD.ORDEM_EVENTOS) do
         local j = TD.EVENTOS[k].pronto and TD.janelaAgora(k)
@@ -1635,16 +1849,24 @@ function TaskDemon.checkinEvento()
             local chave = hoje .. "|" .. k .. "|" .. j.txt
             if not cfg.disparos[chave] then
                 local ag = cfg.agenda[k]
+                TD.eventoChamado = k
+                TD.eventoJanela = j
+                cfg.eventosAtivo = true -- a agenda liga o EVENTOS
+                TD.evEditando = k
+                if TD.atualizarEventos then pcall(TD.atualizarEventos) end
                 if ag.label == "" then
-                    TD.log("Evento " .. TD.EVENTOS[k].titulo .. " sem label na agenda.")
+                    cfg.disparos[chave] = true
+                    TD.iniciarEventoRota(k)
+                    if not TD.evRun then TD.eventoChamado, cfg.eventosAtivo = nil, false end
+                    return true
+                end
+                TD.logEv("Evento " .. TD.EVENTOS[k].titulo .. " (" .. j.txt .. "). Indo para '" .. ag.label .. "'.")
+                if CaveBot.gotoLabel(ag.label) == false then
+                    TD.logEv("ERRO: a label '" .. ag.label .. "' nao existe no CaveBot carregado.")
+                    TD.eventoChamado = nil
                     return true
                 end
                 cfg.disparos[chave] = true
-                TD.eventoChamado = k
-                TD.evEditando = k
-                if TD.atualizarEventos then pcall(TD.atualizarEventos) end
-                TD.log("Evento " .. TD.EVENTOS[k].titulo .. " (" .. j.txt .. "). Indo para '" .. ag.label .. "'.")
-                CaveBot.gotoLabel(ag.label)
                 return "retry"
             end
         end
@@ -1652,43 +1874,572 @@ function TaskDemon.checkinEvento()
     return true
 end
 
+-- Marca o horario atual da agenda como ja feito (todos os eventos): depois de terminar ou desligar na mao,
+-- o CaveBot volta a passar no checkin e a agenda religava o mesmo evento no mesmo horario (ON sem parar).
+function TD.marcarJanelasFeitas()
+    local hoje = os.date("%Y-%m-%d")
+    for _, k in ipairs(TD.ORDEM_EVENTOS) do
+        local ok, j = pcall(TD.janelaAgora, k)
+        if ok and j then cfg.disparos[hoje .. "|" .. k .. "|" .. j.txt] = true end
+    end
+end
+
 function TaskDemon.iniciarEvento(tipo)
     if TD.evRun or not cfg.eventosAtivo then return true end
     if TD.ativo then
-        TD.log("Evento nao iniciado: tem uma task rodando.")
+        TD.logEv("Evento nao iniciado: tem uma task rodando.")
         return true
     end
     TD.evRun = {tipo = tipo or "island", fase = "SALA", inicio = os.time(), bossIdx = 0}
     TD.evEditando = "ev_" .. TD.evRun.tipo
     if TD.atualizarEventos then pcall(TD.atualizarEventos) end
-    TD.evTbAntes = TargetBot and TargetBot.isOn and TargetBot.isOn() or false
-    if TargetBot and TargetBot.setOff then TargetBot.setOff() end
-    if CaveBot and CaveBot.setOff then CaveBot.setOff() end
+    TD.assumirControleEvento()
+    -- auto chase SO no Island (segue o boss). Todos os outros eventos: chase desligado.
     if g_game.setChaseMode then pcall(function() g_game.setChaseMode(1) end) end
     TD.caminho, TD.destinoAtual, TD.destinoCliente, TD.semCaminhoAte = nil, nil, nil, nil
-    TD.log("Island Of Elementals iniciado.")
+    TD.logEv("Island Of Elementals iniciado (auto chase LIGADO).")
     return true
 end
 
-function TD.terminarEvento(motivo, irFim)
+-- Evento comeca: guarda como o bot estava (uma vez so) e o painel assume o andar e o ataque
+function TD.assumirControleEvento()
+    if TD.evAntes == nil then
+        local okC, chase = pcall(function() return g_game.getChaseMode() end)
+        TD.evAntes = {
+            cave = CaveBot and CaveBot.isOn and CaveBot.isOn() or false,
+            target = TargetBot and TargetBot.isOn and TargetBot.isOn() or false,
+            chase = okC and chase or 0,
+        }
+    end
+    if TargetBot and TargetBot.setOff then TargetBot.setOff() end
+    if CaveBot and CaveBot.setOff then CaveBot.setOff() end
+    if TD.logEv then TD.logEv("Evento comecou: CaveBot e TargetBot do bot DESLIGADOS (o painel assume).") end
+end
+
+-- CaveBot da task usado pelo evento: o escolhido na aba EVENTOS ou um com o mesmo nome do evento
+function TD.perfilDoEvento(k)
+    local nome = cfg.eventoPerfil and cfg.eventoPerfil[k]
+    if nome and cfg.perfis[nome] then return nome end
+    local curto = TD.EVENTOS[k] and TD.EVENTOS[k].curto:lower()
+    for n in pairs(cfg.perfis) do
+        if n:lower() == curto then return n end
+    end
+    return nil
+end
+
+function TD.iniciarEventoRota(k, perfil)
+    if TD.evRun then return true end
+    if TD.ativo then
+        TD.logEv("Evento nao iniciado: tem uma task rodando.")
+        return true
+    end
+    -- EVENTOS: o CAMINHO e sempre a entrada fixa do TP (TD.ENTRADA_EVENTO), igual pra todos.
+    -- O perfil e opcional e so da a PRINCIPAL (rota dentro da arena: Snowball/FireStorm).
+    -- Island e Zombie nao precisam de perfil (o painel controla la dentro). Tasks nao passam por aqui.
+    local nome = perfil or TD.perfilDoEvento(k)
+    local p = nome and cfg.perfis[nome]
+    local titulo = TD.EVENTOS[k].titulo
+    if (k == "ev_snowball" or k == "ev_firestorm") and #(p and p.PRINCIPAL or {}) == 0 then
+        TD.logEv(titulo .. ": sem PRINCIPAL (rota da arena). Entra e fica parado la dentro; grave a PRINCIPAL no perfil.")
+    end
+    TD.evRun = {tipo = k:sub(4), rota = true, fase = "ROTA", inicio = os.time(),
+                janela = TD.eventoChamado == k and TD.eventoJanela or nil}
+    TD.evEditando = k
+    TD.assumirControleEvento()
+    if g_game.setChaseMode then pcall(function() g_game.setChaseMode(0) end) end -- chase so dentro do Island
+    TD.limparEstado()
+    TD.perfilAtivo = p and nome or titulo
+    -- copia so a "casca": PRINCIPAL/DP continuam sendo as tabelas do perfil (editar ao vivo funciona)
+    TD.ROTAS = {CAMINHO = TD.ENTRADA_EVENTO, PRINCIPAL = p and p.PRINCIPAL or {}, DP = p and p.DP or {}}
+    TD.escolherRotaInicial()
+    if TD.atualizarEventos then pcall(TD.atualizarEventos) end
+    TD.logEv(titulo .. " iniciado: indo pro TP do evento" .. (p and (" (PRINCIPAL de '" .. nome .. "')") or "") .. ".")
+    return true
+end
+
+-- Para usar no CaveBot na label do evento (igual ao chegadaDP da task)
+function TaskDemon.chegadaEvento()
+    local k = TD.eventoChamado
+    if not k or TD.evRun then return true end
+    return TD.iniciarEventoRota(k)
+end
+
+-- ZOMBIE EVENT: nao ataca, so foge. Automatico (sem campos no painel). Objetivo: ficar vivo o maximo.
+-- Como decide (planejador, olhando TODOS os zombies da tela + os que sairam da tela ha pouco):
+--  1) memoria: lembra onde viu cada zombie nos ultimos TD.ZOMBIE_MEMORIA_MS e supoe que ele continua vindo
+--     (sem isso, o zombie saia 1 sqm da tela, ele achava "Seguro" e parava a cada passo)
+--  2) simula os proximos TD.ZOMBIE_PROF passos: para cada sequencia de passos (N/S/L/O/parado) move os
+--     zombies atras de mim na velocidade deles, contornando parede, e descarta o que for capturado
+--  3) guarda so as TD.ZOMBIE_FEIXE melhores sequencias a cada passo (nota: zombie mais perto bem longe +
+--     todos longe) e anda o 1o passo da melhor. Assim acha a janela pra passar e evita beco.
+--  4) comeca com zombie a TD.ZOMBIE_ALERTA sqm. Diagonal so quando nenhum passo reto sobrevive:
+--     ai simula de novo com diagonal; se nem assim, anda pro sqm que mais afasta (nunca fica parado esperando).
+--  5) teimosia (anti-samba): mantem a direcao anterior se ela for quase tao boa quanto a melhor.
+-- Visao: o cliente afastado enxerga ~18 sqm; usa TD.ZOMBIE_VISAO_X/Y, mas so o que o mapa conhece (tile existe).
+-- Testado em simulacao na arena do evento (minimapa): dura ~2x mais que fugir do mais perto.
+-- so pelo nome exato (nenhum outro monstro conta como zombie)
+TD.ZOMBIE_NOMES = {["event zombie"] = true}
+function TD.zombiesNaTela(p)
+    local lista = {}
+    for _, spec in ipairs(getSpectators()) do
+        local okN, nome = pcall(function() return spec:isMonster() and spec:getName():lower() end)
+        if okN and nome and TD.ZOMBIE_NOMES[nome] then
+            local sp = spec:getPosition()
+            if sp and sp.z == p.z then
+                local okV, v = pcall(function() return spec:getSpeed() end)
+                local okI, id = pcall(function() return spec:getId() end)
+                table.insert(lista, {x = sp.x, y = sp.y, z = sp.z, vel = okV and v or nil, id = okI and id or (sp.x .. "," .. sp.y)})
+            end
+        end
+    end
+    return lista
+end
+
+local function distZombie(pos, zs)
+    local m = 99
+    for _, z in ipairs(zs) do
+        local d = math.max(math.abs(pos.x - z.x), math.abs(pos.y - z.y))
+        if d < m then m = d end
+    end
+    return m
+end
+
+TD.ZOMBIE_VISAO_X = 18         -- tela afastada: sqm visiveis pros lados (tile que o cliente nao tem conta como desconhecido)
+TD.ZOMBIE_VISAO_Y = 14         -- tela afastada: sqm visiveis pra cima/baixo
+TD.ZOMBIE_TEIMA = 0.9          -- mantem a direcao anterior se a nota dela for >= 90% da melhor (anti-samba)
+TD.ZOMBIE_CAPTURA = 2          -- a 2 sqm o jogo ja conta como capturado
+TD.ZOMBIE_ALERTA = 6           -- comeca a fugir com zombie a essa distancia
+TD.ZOMBIE_PROF = 16            -- passos simulados a frente
+TD.ZOMBIE_FEIXE = 60           -- sequencias guardadas por passo (mais = melhor e mais pesado)
+TD.ZOMBIE_MEMORIA_MS = 4000    -- lembra de zombie que saiu da tela por esse tempo
+
+local ORTO, DIAGS = {DELTAS[1], DELTAS[2], DELTAS[3], DELTAS[4]}, {DELTAS[5], DELTAS[6], DELTAS[7], DELTAS[8]}
+local MOVS = {DELTAS[1], DELTAS[2], DELTAS[3], DELTAS[4], {0, 0, nil}}   -- 4 retos + ficar parado
+local function chaveXY(x, y) return x * 100000 + y end
+local function chebyshev(a, b) return math.max(math.abs(a.x - b.x), math.abs(a.y - b.y)) end
+
+-- zombies visiveis + lembrados (os que sairam da tela andam na minha direcao pelo tempo que passou)
+local function zombiesConhecidos(ev, p, zsTela)
+    local agora = agoraMs()
+    ev.memZ = ev.memZ or {}
+    for _, z in ipairs(zsTela) do ev.memZ[z.id] = {x = z.x, y = z.y, z = z.z, vel = z.vel, t = agora} end
+    local lista, lembrados = {}, 0
+    for id, m in pairs(ev.memZ) do
+        local idade = agora - m.t
+        if idade > TD.ZOMBIE_MEMORIA_MS or m.z ~= p.z then
+            ev.memZ[id] = nil
+        else
+            local z = {x = m.x, y = m.y, z = m.z, vel = m.vel}
+            if idade > 0 then
+                lembrados = lembrados + 1
+                -- ponytail: passo de ~150 de chao por sqm (grama); ajustar se o chao da arena for outro
+                local passos = math.floor(idade / 1000 * (m.vel or 100) / 150)
+                for _ = 1, passos do
+                    z.x = z.x + (p.x > z.x and 1 or (p.x < z.x and -1 or 0))
+                    z.y = z.y + (p.y > z.y and 1 or (p.y < z.y and -1 or 0))
+                end
+            end
+            table.insert(lista, z)
+        end
+    end
+    return lista, lembrados
+end
+
+-- retorna a direcao pra andar (ou nil) e o motivo
+function TD.decidirFugaZombie(ev, p, zsTela)
+    local zs, lembrados = zombiesConhecidos(ev, p, zsTela)
+    ev.pertoZombie = distZombie(p, zs)
+    if #zs == 0 then return nil, "Seguro" end
+    local info = " (" .. #zs .. " zombies" .. (lembrados > 0 and (", " .. lembrados .. " fora da tela") or "") .. ")"
+    if ev.pertoZombie > TD.ZOMBIE_ALERTA then return nil, "Observando" .. info end
+
+    local vp = 0
+    pcall(function() vp = player:getSpeed() end)
+    local r = 0.5   -- sem velocidade: zombie anda ~1 a cada 2 passos nossos
+    if vp > 0 then
+        r = 0
+        for _, z in ipairs(zs) do r = math.max(r, (z.vel or vp * 0.5) / vp) end
+        r = math.min(math.max(r, 0.2), 2)
+    end
+    local VX, VY = TD.ZOMBIE_VISAO_X, TD.ZOMBIE_VISAO_Y
+    local function naTela(q) return math.abs(q.x - p.x) <= VX and math.abs(q.y - p.y) <= VY end
+    local function euPiso(q) return naTela(q) and TD.analisarTile(q).tipo == "livre" end
+    local function zombieAnda(q)   -- fora da tela / tile desconhecido: deixa andar (pior caso)
+        if not naTela(q) then return true end
+        local a = TD.analisarTile(q)
+        if a.desconhecido then return true end
+        return a.tipo ~= "parede" and a.tipo ~= "barreira"
+    end
+    local function passoZ(z, alvo, ocup)
+        local melhor, md, mm = z, chebyshev(z, alvo), math.abs(z.x - alvo.x) + math.abs(z.y - alvo.y)
+        for _, d in ipairs(DELTAS) do
+            local q = {x = z.x + d[1], y = z.y + d[2], z = z.z}
+            if not ocup[chaveXY(q.x, q.y)] and zombieAnda(q) then
+                local dq, mq = chebyshev(q, alvo), math.abs(q.x - alvo.x) + math.abs(q.y - alvo.y)
+                if dq < md or (dq == md and mq < mm) then melhor, md, mm = q, dq, mq end
+            end
+        end
+        return melhor
+    end
+
+    -- feixe: cada estado = eu, zombies, 1o passo, sobra de passo de zombie.
+    -- Retorna a lista de 1os passos da melhor pra pior nota final ({dir, nota}), ou nil se nada sobrevive.
+    local function feixe(movs, CAPT, prof)
+        local estados, fim = {{eu = p, zs = zs, pr = false, acc = 0}}, nil
+        for t = 1, prof do
+            local novos, lista = {}, {}
+            for _, e in ipairs(estados) do
+                for _, d in ipairs(movs) do
+                    local q = {x = e.eu.x + d[1], y = e.eu.y + d[2], z = p.z}
+                    if d[3] == nil or euPiso(q) then
+                        local a, z2 = e.acc + r, e.zs
+                        while a >= 1 do
+                            local novo, ocup = {}, {}
+                            for i, z in ipairs(z2) do
+                                novo[i] = passoZ(z, q, ocup)
+                                ocup[chaveXY(novo[i].x, novo[i].y)] = true
+                            end
+                            z2, a = novo, a - 1
+                        end
+                        local dmin, soma = 99, 0
+                        for _, z in ipairs(z2) do
+                            local dz = chebyshev(q, z)
+                            if dz < dmin then dmin = dz end
+                            soma = soma + math.min(dz, 20)
+                        end
+                        if dmin > CAPT then
+                            local k = { chaveXY(q.x, q.y) }
+                            for _, z in ipairs(z2) do k[#k + 1] = chaveXY(z.x, z.y) end
+                            k = table.concat(k, ":")
+                            local nota = 5 * dmin + soma
+                            local ant = novos[k]
+                            if not ant or nota > ant.nota then
+                                local pr = e.pr
+                                if t == 1 then pr = d[3] end
+                                local s = {eu = q, zs = z2, pr = pr, acc = a, nota = nota}
+                                if not ant then table.insert(lista, s) else for i, x in ipairs(lista) do if x == ant then lista[i] = s end end end
+                                novos[k] = s
+                            end
+                        end
+                    end
+                end
+            end
+            if #lista == 0 then break end
+            table.sort(lista, function(x, y) return x.nota > y.nota end)
+            for i = #lista, TD.ZOMBIE_FEIXE + 1, -1 do lista[i] = nil end
+            estados, fim = lista, lista
+        end
+        if not fim then return nil end
+        local porDir, visto = {}, {}
+        for _, e in ipairs(fim) do
+            local k = e.pr == nil and "parado" or e.pr
+            if not visto[k] then visto[k] = true; table.insert(porDir, {dir = e.pr, nota = e.nota}) end
+        end
+        return porDir
+    end
+
+    local porDir = feixe(MOVS, TD.ZOMBIE_CAPTURA, TD.ZOMBIE_PROF)
+    local modo = "Fugindo"
+    if not porDir then
+        -- nenhum passo reto sobrevive: libera diagonal e so conta captura encostado
+        local todos = {MOVS[1], MOVS[2], MOVS[3], MOVS[4], DIAGS[1], DIAGS[2], DIAGS[3], DIAGS[4], MOVS[5]}
+        porDir, modo = feixe(todos, 1, math.floor(TD.ZOMBIE_PROF / 2)), "Fugindo (diagonal)"
+    end
+    if not porDir then
+        -- ultimo recurso: o sqm vizinho que mais afasta (mesmo empatado: nunca fica parado com zombie chegando)
+        local passo, melhorD = nil, -1
+        for _, d in ipairs(DELTAS) do
+            local q = posMais(p, d[1], d[2])
+            if euPiso(q) and distZombie(q, zs) > melhorD then passo, melhorD = d[3], distZombie(q, zs) end
+        end
+        ev.ultDir = passo
+        return passo, "Sem saida" .. info
+    end
+    local escolha = porDir[1]
+    for _, o in ipairs(porDir) do   -- anti-samba: fica na direcao anterior se for quase tao boa
+        if o.dir ~= nil and o.dir == ev.ultDir and o.dir ~= escolha.dir and o.nota >= TD.ZOMBIE_TEIMA * escolha.nota then escolha = o end
+    end
+    ev.ultDir = escolha.dir
+    if escolha.dir == nil then return nil, "Parado (melhor lugar)" .. info end
+    return escolha.dir, modo .. info
+end
+
+function TD.fugirZombies(ev, zs)
+    local p = player:getPosition()
+    if not p then return end
+    if g_game.getAttackingCreature() and g_game.cancelAttack then g_game.cancelAttack() end
+    local t = agoraMs()
+    if andando() or t < (ev.proxPasso or 0) then return end
+    ev.proxPasso = t + 100
+    TD.cacheTiles = {}
+    local ok, dir, motivo = pcall(TD.decidirFugaZombie, ev, p, zs)
+    TD.cacheTiles = nil
+    if not ok then
+        ev.fugaEstado = "Erro: " .. tostring(dir)
+        return
+    end
+    ev.fugaEstado = motivo
+    if dir ~= nil then
+        TD.passoProprioAte = t + 600
+        g_game.walk(dir)
+    end
+end
+
+-- SNOWBALL WAR: alinha com um player (mesma linha/coluna), vira pra ele e "!snowball atirar"
+TD.SNOW = {
+    sala = {x1 = 19001, x2 = 19007, y1 = 19238, y2 = 19244, z = 6}, -- sala de espera
+    alcance = 4,          -- a bola vai mais longe, mas ate 4 sqm e garantido
+    visao = 15,           -- so sai da rota PRINCIPAL pra cacar player a ate essa distancia
+    paradoMs = 500,       -- player parado ha pelo menos isso = alvo (em movimento e ignorado)
+    intervalo = 1000,     -- ms entre tiros (ajustar no teste)
+    recarregarCom = 0,    -- vai no gerador quando as bolas chegarem nisso
+}
+local DIR4 = {{0, -1, North or 0}, {1, 0, East or 1}, {0, 1, South or 2}, {-1, 0, West or 3}}
+
+function TD.naSalaSnow(p)
+    local s = TD.SNOW.sala
+    return p and p.z == s.z and p.x >= s.x1 and p.x <= s.x2 and p.y >= s.y1 and p.y <= s.y2
+end
+
+-- ZOMBIE: quadrado de entrada da arena (4 gotos 18965,18943 / 18964,18951 / 18981,18952 / 18982,18945, z7).
+-- Pisou aqui = entrou no Zombie: a rota do painel desliga e so a fuga anda.
+TD.ZOMBIE_ENTRADA = {x1 = 18964, x2 = 18982, y1 = 18943, y2 = 18952, z = 7}
+function TD.naEntradaZombie(p)
+    local s = TD.ZOMBIE_ENTRADA
+    return p and p.z == s.z and p.x >= s.x1 and p.x <= s.x2 and p.y >= s.y1 and p.y <= s.y2
+end
+
+-- FIRESTORM: arena = retangulo dos 4 cantos (18957,18817 / 18968,18824, z7). Dentro dela roda a PRINCIPAL.
+TD.FIRE_ARENA = {x1 = 18957, x2 = 18968, y1 = 18817, y2 = 18824, z = 7}
+function TD.naArenaFire(p)
+    local s = TD.FIRE_ARENA
+    return p and p.z == s.z and p.x >= s.x1 and p.x <= s.x2 and p.y >= s.y1 and p.y <= s.y2
+end
+
+-- direcao para atirar de p no alvo: alinhado, no alcance e sem parede no meio
+local function direcaoTiro(p, alvo)
+    if p.z ~= alvo.z or (p.x ~= alvo.x and p.y ~= alvo.y) then return nil end
+    local d = dist(p, alvo)
+    if d == 0 or d > TD.SNOW.alcance then return nil end
+    local dx = alvo.x > p.x and 1 or (alvo.x < p.x and -1 or 0)
+    local dy = alvo.y > p.y and 1 or (alvo.y < p.y and -1 or 0)
+    for k = 1, d - 1 do
+        local tipo = TD.analisarTile({x = p.x + dx * k, y = p.y + dy * k, z = p.z}).tipo
+        if tipo == "parede" or tipo == "barreira" then return nil end
+    end
+    if dx == 0 then return dy < 0 and (North or 0) or (South or 2) end
+    return dx < 0 and (West or 3) or (East or 1)
+end
+
+-- so players PARADOS: em movimento e dificil de acertar, entao ignora
+function TD.playersSnow(ev, p, t)
+    ev.snowPos = ev.snowPos or {}
+    local lista, total = {}, 0
+    for _, spec in ipairs(getSpectators()) do
+        local okP, ehP = pcall(function() return spec:isPlayer() end)
+        if okP and ehP and spec ~= player then
+            local sp = spec:getPosition()
+            if sp and sp.z == p.z then
+                total = total + 1
+                local id = spec:getId()
+                local r = ev.snowPos[id]
+                if not r or not mesmaPos(r.pos, sp) then
+                    r = {pos = {x = sp.x, y = sp.y, z = sp.z}, desde = t}
+                    ev.snowPos[id] = r
+                end
+                local okW, anda = pcall(function() return spec:isWalking() end)
+                if not (okW and anda) and t - r.desde >= TD.SNOW.paradoMs and dist(p, sp) <= TD.SNOW.visao then
+                    table.insert(lista, {c = spec, pos = sp, d = dist(p, sp)})
+                end
+            end
+        end
+    end
+    ev.nPlayers, ev.nParados = total, #lista
+    table.sort(lista, function(a, b) return a.d < b.d end)
+    return lista
+end
+
+local function falar(msg)
+    if say and pcall(function() say(msg) end) then return end
+    pcall(function() g_game.talk(msg) end)
+end
+
+local function passoPara(ev, p, destino, t, alcance)
+    if andando() or t < (ev.proxPasso or 0) then return end
+    ev.proxPasso = t + 100
+    local dirs = calcularCaminho(p, destino, true, alcance or 20)
+    if dirs then
+        TD.passoProprioAte = t + 600
+        g_game.walk(dirs[1])
+    end
+end
+
+-- gerador (posicoes dadas pelo usuario): fica em pe no sqm da frente e da "use" no gerador.
+-- Sem bolas: vai direto pra la, usa ate 2x (10 bolas por uso) e volta pro jogo.
+TD.SNOW.geradorPe = {x = 19004, y = 19243, z = 7}
+TD.SNOW.gerador = {x = 19004, y = 19242, z = 7}
+TD.SNOW.usosGerador = 2
+
+-- sai da rota PRINCIPAL pra cacar/ir no gerador: para o autoWalk do goto na hora (sem esperar chegar nele)
+local function pausarRotaSnow(ev)
+    if ev.cacando then return end
+    ev.cacando = true -- ao voltar, retoma a rota pelo goto mais perto
+    if player.stopAutoWalk then pcall(function() player:stopAutoWalk() end) end
+    TD.caminho, TD.destinoAtual = nil, nil
+end
+
+function TD.recarregarSnow(ev, p, t)
+    local pe, g = TD.SNOW.geradorPe, TD.SNOW.gerador
+    ev.snowEstado = "Indo no gerador"
+    pausarRotaSnow(ev)
+    -- da pra usar o gerador de QUALQUER sqm colado nele (frente ou lados): vai no sqm livre colado mais perto.
+    -- Todos ocupados: tenta o da frente (pe). Ja colado: usa daqui mesmo.
+    if dist(p, g) > 1 then
+        local alvo, md = pe, 99
+        for _, d in ipairs(DELTAS) do
+            local q = {x = g.x + d[1], y = g.y + d[2], z = g.z}
+            if TD.analisarTile(q).tipo == "livre" and dist(p, q) < md then alvo, md = q, dist(p, q) end
+        end
+        return passoPara(ev, p, alvo, t, 40)
+    end
+    if t < (ev.proxUso or 0) then return end
+    ev.usos = ev.usos or 0
+    if ev.usos >= TD.SNOW.usosGerador then
+        -- ja usou o maximo: volta pro jogo (bolas = desconhecido ate o proximo "Restam Nx")
+        ev.usos, ev.bolas = nil, nil
+        return
+    end
+    ev.proxUso = t + 1500
+    local tile = g_map.getTile(g)
+    local coisa = tile and tile:getTopUseThing()
+    if coisa then
+        g_game.use(coisa)
+        ev.usos = ev.usos + 1
+        TD.logEv("Snowball: usando o gerador (" .. ev.usos .. "/" .. TD.SNOW.usosGerador .. ").")
+        -- ultimo uso: volta pro jogo na hora (nao espera mais 1,5s parado)
+        if ev.usos >= TD.SNOW.usosGerador then ev.usos, ev.bolas = nil, nil end
+    end
+end
+
+function TD.passoSnow(ev, p, t)
+    if (ev.bolas and ev.bolas <= TD.SNOW.recarregarCom) or ev.usos then
+        if t >= (ev.geradorAte or 0) then return TD.recarregarSnow(ev, p, t) end
+        -- sem bolas e sem pontos: nao adianta cacar, so segue a rota (tenta o gerador de novo em 1 min)
+        ev.usos = nil
+        ev.snowEstado = "Sem bolas (sem pontos): seguindo a rota"
+        return "rota"
+    end
+    local players = TD.playersSnow(ev, p, t)
+    -- 1) ja alinhado com alguem: vira e atira
+    for _, a in ipairs(players) do
+        local dir = direcaoTiro(p, a.pos)
+        if dir then
+            ev.alvoSnow = TD.nomeLimpo(a.c:getName())
+            ev.snowEstado = "Atirando"
+            pausarRotaSnow(ev)
+            if andando() then return end
+            local okD, olhando = pcall(function() return player:getDirection() end)
+            if okD and olhando ~= dir then
+                if t >= (ev.proxVirar or 0) then
+                    ev.proxVirar = t + 150
+                    g_game.turn(dir)
+                end
+                return
+            end
+            if t >= (ev.proxTiro or 0) then
+                ev.proxTiro = t + TD.SNOW.intervalo
+                falar("!snowball atirar")
+                ev.tiros = (ev.tiros or 0) + 1
+            end
+            return
+        end
+    end
+    -- 2) anda ate o sqm alinhado mais perto de algum player
+    local melhor, melhorCusto = nil, 999
+    for i = 1, math.min(#players, 6) do
+        local a = players[i]
+        for _, v in ipairs(DIR4) do
+            for k = 1, TD.SNOW.alcance do
+                local tp = {x = a.pos.x + v[1] * k, y = a.pos.y + v[2] * k, z = a.pos.z}
+                local tipo = TD.analisarTile(tp).tipo
+                if tipo == "parede" or tipo == "barreira" then break end
+                if tipo == "livre" and dist(p, tp) < melhorCusto then melhor, melhorCusto = tp, dist(p, tp) end
+            end
+        end
+    end
+    ev.alvoSnow = nil
+    if not melhor then
+        -- ninguem pra cacar perto: segue a rota PRINCIPAL do painel
+        ev.snowEstado = "Rota (" .. ((ev.nPlayers or 0) == 0 and "sem players" or "ninguem parado a " .. TD.SNOW.visao .. " sqm") .. ")"
+        return "rota"
+    end
+    ev.snowEstado = "Alinhando com player"
+    pausarRotaSnow(ev)
+    passoPara(ev, p, melhor, t)
+end
+
+function TD.cicloSnow(ev)
+    local p = player:getPosition()
+    if not p then return end
+    if g_game.getAttackingCreature() and g_game.cancelAttack then g_game.cancelAttack() end
+    TD.cacheTiles = {}
+    local ok, r = pcall(TD.passoSnow, ev, p, agoraMs())
+    TD.cacheTiles = nil
+    if not ok then error(r) end
+    if r ~= "rota" or #(TD.ROTAS.PRINCIPAL or {}) == 0 then return end
+    if ev.cacando or TD.rota ~= "PRINCIPAL" then
+        -- voltou da caca (ou acabou de comecar): retoma pelo goto MAIS PERTO da PRINCIPAL
+        ev.cacando = nil
+        TD.entrarNaRota("PRINCIPAL")
+        -- andou mais de 4 sqm cacando: sem isso a rota achava que foi teleporte e pulava 1 goto
+        TD.ultimaPosRota = p
+    end
+    TD.andarRota()
+end
+
+-- manual = desligado no botao EVENTOS: CaveBot e TargetBot do vBot ficam DESLIGADOS (voce liga quando quiser).
+-- Fim automatico (venceu, perdeu, horario, morreu...): religa os dois e vai pra label final.
+function TD.terminarEvento(motivo, irFim, manual)
     if not TD.evRun then return end
     TD.evTipoFim = TD.evRun.tipo
     TD.evRun = nil
     TD.eventoChamado = nil
+    cfg.eventosAtivo = false -- so volta a ligar clicando ou pela agenda
+    TD.marcarJanelasFeitas() -- a agenda nao religa o mesmo evento no mesmo horario
+    if not TD.ativo then TD.estado = "DESLIGADO" end
+    TD.evAntes = nil
+    if g_game.cancelAttack then pcall(g_game.cancelAttack) end
     if g_game.cancelFollow then pcall(g_game.cancelFollow) end
-    if TD.evTbAntes and TargetBot and TargetBot.setOn then TargetBot.setOn() end
-    TD.evTbAntes = nil
-    if CaveBot and CaveBot.setOn then CaveBot.setOn() end
-    local labelFim = TD.labelFimEvento and TD.labelFimEvento("ev_" .. (TD.evTipoFim or "island")) or cfg.evLabelFim
-    if irFim and labelFim ~= "" then CaveBot.gotoLabel(labelFim) end
-    TD.log("Evento encerrado: " .. motivo .. ".")
+    -- auto chase desligado ao terminar qualquer evento (so o Island liga)
+    if g_game.setChaseMode then pcall(function() g_game.setChaseMode(0) end) end
+    if player.stopAutoWalk then pcall(function() player:stopAutoWalk() end) end
+    if manual then
+        -- desligou na mao: nao religa nada do vBot (religar aqui fazia o CaveBot do vBot brigar com o painel)
+        if CaveBot and CaveBot.setOff then pcall(CaveBot.setOff) end
+        TD.logEv("Desligado na mao: CaveBot e TargetBot do bot continuam DESLIGADOS.")
+    else
+        -- fim automatico: SEMPRE religa CaveBot e TargetBot (antes so religava o target se estava ligado no
+        -- inicio, e as vezes ele ja estava desligado nessa hora -> ficava sem target depois do evento)
+        if TargetBot and TargetBot.setOn then pcall(TargetBot.setOn) end
+        local labelFim = TD.labelFimEvento and TD.labelFimEvento("ev_" .. (TD.evTipoFim or "island")) or cfg.evLabelFim
+        if CaveBot and CaveBot.setOn then pcall(CaveBot.setOn) end
+        if irFim and labelFim ~= "" then pcall(CaveBot.gotoLabel, labelFim) end
+        TD.logEv("Fim automatico: CaveBot e TargetBot do bot LIGADOS" .. ((irFim and labelFim ~= "") and (", indo pra label '" .. labelFim .. "'.") or "."))
+    end
+    if TD.pintarEventos then pcall(TD.pintarEventos) end
+    local info = TD.EVENTOS["ev_" .. (TD.evTipoFim or "")] or {titulo = "Evento", curto = "Evento"}
+    -- motivo que ja comeca com o nome do evento ("FireStorm: atingido") nao repete o nome
+    local jaTemNome = motivo:sub(1, #info.curto + 1):lower() == (info.curto .. ":"):lower()
+    TD.evUltimo = (jaTemNome and motivo or (info.titulo .. ": " .. motivo)) .. " (" .. os.date("%H:%M") .. ")"
+    TD.logEv("Evento encerrado: " .. motivo .. ".")
 end
 
-function TD.acharTpIsland(centro)
+function TD.acharTpIsland(centro, raio)
     if not centro or not g_map then return nil end
+    raio = raio or 4
     local melhor, melhorD = nil, 99
-    for dx = -4, 4 do
-        for dy = -4, 4 do
+    for dx = -raio, raio do
+        for dy = -raio, raio do
             local pos = {x = centro.x + dx, y = centro.y + dy, z = centro.z}
             local tile = g_map.getTile(pos)
             if tile then
@@ -1737,7 +2488,20 @@ function TD.cicloIsland()
     ev.ultimaPos = {x = p.x, y = p.y, z = p.z}
     local pulou = antes and (antes.z ~= p.z or math.max(math.abs(antes.x - p.x), math.abs(antes.y - p.y)) > 5)
 
-    if TD.naSalaIsland(p) then
+    -- Island Death morreu (mensagem do servidor): sai pelo TP e so entao encerra
+    if ev.morteFinal then
+        if pulou then return TD.terminarEvento("Island Death concluido (saiu pelo TP)", true) end
+        -- o TP de saida leva pra cidade (PZ): pisou na PZ = ja esta fora, pode encerrar
+        if TD.emPz and TD.emPz() then return TD.terminarEvento("Island Death concluido (chegou na PZ)", true) end
+        if os.time() - ev.morteFinal > 90 then
+            return TD.terminarEvento("Island Death concluido (nao consegui sair pelo TP em 90s)", true)
+        end
+        if ev.fase ~= "TP" then
+            ev.fase, ev.mortePos, ev.tpDesde = "TP", ev.mortePos or ev.bossPos or {x = p.x, y = p.y, z = p.z}, t
+        end
+    end
+
+    if TD.naSalaIsland(p) and not ev.morteFinal then
         ev.fase = "SALA"
         return
     end
@@ -1780,11 +2544,11 @@ function TD.cicloIsland()
         ev.fase = "TP"
         ev.mortePos = ev.bossPos
         ev.tpDesde = t
-        TD.log((ev.bossNome or "Boss") .. " morreu. Indo para o TP.")
+        TD.logEv((ev.bossNome or "Boss") .. " morreu. Indo para o TP.")
     end
 
     if ev.fase == "TP" then
-        local tp = TD.acharTpIsland(ev.mortePos) or ev.mortePos
+        local tp = TD.acharTpIsland(ev.mortePos) or TD.acharTpIsland(p, 8) or ev.mortePos
         ev.tpPos = tp
         TD.pisarEm(tp, t)
         if tp and dist(p, tp) == 0 and t - (ev.tpDesde or t) > 4000 then
@@ -1799,7 +2563,107 @@ macro(50, TD.protegido("evento", function()
         if cfg.eventosAtivo and not TD.ativo and TD.naSalaIsland(player:getPosition()) then TaskDemon.iniciarEvento("island") end
         return
     end
-    if TD.evRun.tipo == "island" then TD.cicloIsland() end
+    if TD.evRun.tipo == "island" and not TD.evRun.rota then TD.cicloIsland() end
+end))
+
+macro(50, TD.protegido("eventoRota", function()
+    local ev = TD.evRun
+    if not ev or not ev.rota then return end
+    local pAgora = player:getPosition()
+    local pAntes = ev.posAntes
+    ev.posAntes = pAgora and {x = pAgora.x, y = pAgora.y, z = pAgora.z}
+    -- entrou no TP do evento (vale pra todos): estava colado nele e a posicao pulou longe
+    local entrouTp = pAntes and pAgora and dist(pAntes, TD.TP_EVENTO) <= 2
+        and (pAntes.z ~= pAgora.z or math.max(math.abs(pAntes.x - pAgora.x), math.abs(pAntes.y - pAgora.y)) > 8)
+        and dist(pAgora, TD.TP_EVENTO) > 20   -- caiu longe do TP de verdade (nao foi so empurrado)
+    if entrouTp and not ev.dentro then
+        ev.dentro = true
+        TD.logEv("Entrou no TP do evento (" .. pAgora.x .. ", " .. pAgora.y .. ", " .. pAgora.z .. ").")
+    end
+    if ev.tipo == "island" and pAgora then
+        if entrouTp then
+            cfg.islandSala = {x1 = pAgora.x - 8, x2 = pAgora.x + 8, y1 = pAgora.y - 6, y2 = pAgora.y + 6, z = pAgora.z}
+            TD.logEv("Sala do Island aprendida.")
+        end
+        if entrouTp or TD.naSalaIsland(pAgora) then
+            -- os gotos trouxeram ate a sala: a automacao do Island assume daqui
+            TD.evRun = nil
+            return TaskDemon.iniciarEvento("island")
+        end
+    end
+    local okH, hp = pcall(function() return player:getHealth() end)
+    if okH and hp and hp <= 0 then return TD.terminarEvento("morreu", false) end
+    if ev.janela and ev.janela.comFim and not TD.janelaAgora("ev_" .. ev.tipo) then
+        return TD.terminarEvento("horario acabou", true)
+    end
+    if os.time() - ev.inicio > 45 * 60 then return TD.terminarEvento("passou de 45 min", true) end
+    -- chegou tarde e o TP ja fechou: nao fica forcando o SOUTH ate os 45 min, volta pra hunt
+    if not ev.dentro and os.time() - ev.inicio > TD.EVENTO_ESPERA_TP_MIN * 60 then
+        return TD.terminarEvento("nao conseguiu entrar no TP em " .. TD.EVENTO_ESPERA_TP_MIN .. " min (fechou?)", true)
+    end
+    if ev.tipo == "firestorm" and pAgora and TD.naArenaFire(pAgora) and not ev.dentro then
+        ev.dentro = true
+        TD.logEv("FireStorm: entrou na arena.")
+    end
+    if ev.tipo == "firestorm" and ev.dentro and TD.rota ~= "PRINCIPAL" and #(TD.ROTAS.PRINCIPAL or {}) > 0 then
+        TD.entrarNaRota("PRINCIPAL")
+        TD.logEv("FireStorm: rodando a PRINCIPAL.")
+    end
+    if ev.tipo == "zombie" then
+        -- Fora da arena: so o CAMINHO (forca entrar no TP). Pisou no quadrado de entrada (ou o TP do evento
+        -- levou): marca ev.naArena e a rota do painel PARA de vez (nao briga com a fuga). Dentro: espera parado
+        -- e foge quando aparece zombie (ou chega a mensagem de inicio).
+        local p = pAgora
+        if not ev.naArena and p then
+            if ev.dentro or TD.naEntradaZombie(p) then
+                ev.naArena, ev.dentro, ev.fase, ev.fugaEstado = true, true, "ESPERA", "Esperando comecar"
+                TD.caminho, TD.destinoAtual = nil, nil
+                if player.stopAutoWalk then pcall(function() player:stopAutoWalk() end) end
+                TD.logEv("Zombie: entrou na arena. Rota do painel desligada; so a fuga a partir daqui.")
+            end
+        end
+        if not ev.naArena then return TD.andarRota() end
+        local zs = p and TD.zombiesNaTela(p) or {}
+        ev.zombies = #zs
+        if ev.fase ~= "FUGA" and #zs > 0 then ev.fase = "FUGA" end
+        if ev.fase == "FUGA" then return TD.fugirZombies(ev, zs) end
+        return
+    elseif ev.tipo == "snowball" then
+        -- na sala de espera: parado. Saiu da sala depois de entrar (ou ja esta na arena, perto da PRINCIPAL,
+        -- ex.: ligou o evento la dentro): o jogo comecou -> PRINCIPAL + caca de player (TD.cicloSnow)
+        local p = pAgora
+        if entrouTp then ev.entrouSala = true end
+        if TD.naSalaSnow(p) then
+            ev.entrouSala, ev.dentro, ev.fase, ev.snowEstado = true, true, "ESPERA", "Esperando comecar"
+            return
+        end
+        if not ev.jogando and (ev.entrouSala or TD.pertoDaRota("PRINCIPAL", TD.SNOW.visao)) then
+            ev.dentro = true
+            ev.jogando = true
+            TD.logEv("Snowball: na arena. Seguindo a PRINCIPAL e cacando player a ate " .. TD.SNOW.visao .. " sqm.")
+        end
+        if ev.jogando then
+            ev.fase = "JOGO"
+            return TD.cicloSnow(ev)
+        end
+    end
+    -- ja entrou: nunca mais anda a entrada (voltaria pro TP). Sem PRINCIPAL = fica parado la dentro.
+    if ev.dentro and TD.rota == "CAMINHO" then return end
+    -- no ultimo sqm da entrada e ainda fora: FORCA o SOUTH a cada 1s, igual pra todos os eventos (Island tambem).
+    -- Nao depende do estado interno da rota (antes podia ficar parado sem tentar de novo).
+    local ult = TD.ENTRADA_EVENTO[#TD.ENTRADA_EVENTO]
+    if not ev.dentro and TD.rota == "CAMINHO" and pAgora and pAgora.x == ult[1] and pAgora.y == ult[2] and pAgora.z == ult[3] then
+        ev.fase = "FORCANDO"
+        local t = agoraMs()
+        if not andando() and t >= (ev.proxForca or 0) then
+            ev.proxForca = t + 1000
+            TD.passoProprioAte = t + 600
+            g_game.walk(TD.LADOS.S)
+        end
+        return
+    end
+    if ev.fase == "FORCANDO" then ev.fase = "ROTA" end
+    TD.andarRota()
 end))
 
 function TD.macrosExternos()
@@ -1849,6 +2713,7 @@ end)
 function TD.ligar()
     if TD.ativo then return end
     TD.ativo = true
+    cfg.eventosAtivo = false
     if CaveBot and CaveBot.isOn and CaveBot.isOn() then
         TD.caveBotEstava = true
         CaveBot.setOff()
@@ -1998,8 +2863,11 @@ macro(50, TD.protegido("alvos", function()
             local info = TD.analisarTile(tp)
             if info.tipo == "livre" then
                 livres = livres + 1
-            elseif info.tipo == "monstro" and info.criatura and TD.ehDaTask(info.criatura) then
+            elseif info.tipo == "monstro" and info.criatura then
+                -- task trapada por bicho: pode bater em QUALQUER bicho colado que esteja trapando (painel bate
+                -- sozinho, sem CaveBot/TargetBot do vBot). Prefere o da task e o que fica pro lado do goto.
                 local dd = destino and math.sqrt((tp.x - destino.x) ^ 2 + (tp.y - destino.y) ^ 2) or 0
+                if not TD.ehDaTask(info.criatura) then dd = dd + 3 end
                 if dd < melhorD then melhor, melhorD = info.criatura, dd end
             end
         end
@@ -2263,7 +3131,59 @@ function TD.atacantePlayer(text)
     return false
 end
 
+-- "[ISLAND OF ELEMENTALS] Os bravos guerreiros derrotaram o mais temido boss Island Death, o evento foi encerrado!"
+function TD.lerMensagemEvento(text)
+    local ev = TD.evRun
+    if not ev then return end
+    text = tostring(text or "")
+    local baixo = text:lower()
+    if ev.tipo == "island" then
+        if baixo:find("island death", 1, true) and baixo:find("encerrado", 1, true) and not ev.morteFinal then
+            -- nao encerra aqui: ainda esta dentro do Island. Vai pro TP de saida; encerra quando o TP levar
+            -- (TD.cicloIsland). Encerrar aqui mandava o CaveBot pro DP de dentro do Island e ele ficava preso.
+            ev.morteFinal = os.time()
+            TD.logEv("Island Death derrotado: indo pro TP de saida antes de encerrar.")
+        end
+    elseif ev.tipo == "zombie" and baixo:find("zombie event", 1, true) then
+        local eu = TD.nomeLimpo(player:getName())
+        local devorado = text:match("%]%s*(.-)%s+foi devorado")
+        local vencedor = text:match("%]%s*(.-)%s+venceu")
+        if baixo:find("teleport foi fechado", 1, true) then
+            ev.fase = "FUGA"
+            TD.logEv("Zombie Event comecou! Fugindo dos zombies.")
+        elseif baixo:find("perdeu", 1, true) or (devorado and TD.nomeLimpo(devorado) == eu) then
+            TD.terminarEvento("Zombie: PERDEU (capturado)", true)
+        elseif vencedor then
+            TD.terminarEvento(TD.nomeLimpo(vencedor) == eu and "Zombie: VENCEU!" or ("Zombie: acabou, " .. vencedor .. " venceu"), true)
+        elseif devorado then
+            TD.logEv(devorado .. " foi devorado.")
+        end
+    elseif ev.tipo == "firestorm" and baixo:find("firestorm", 1, true) then
+        -- "[FireStorm] Você foi atingido e removido do evento!"
+        if baixo:find("removido", 1, true) or baixo:find("atingido", 1, true) then
+            TD.terminarEvento("FireStorm: atingido", true)
+        elseif baixo:find("venceu", 1, true) or baixo:find("vencedor", 1, true) or baixo:find("encerrado", 1, true) then
+            -- ponytail: mensagem de fim chutada; trocar pelo texto real quando aparecer
+            TD.terminarEvento("FireStorm: acabou", true)
+        end
+    elseif ev.tipo == "snowball" then
+        local restam = baixo:match("restam%s+(%d+)x%s+bolas")
+        if restam then ev.bolas = tonumber(restam) end
+        if baixo:find("nao possui pontos", 1, true) or baixo:find("não possui pontos", 1, true) then
+            ev.geradorAte = agoraMs() + 60000
+            TD.logEv("Snowball: sem pontos para trocar no gerador. Tento de novo em 1 min.")
+        end
+        if baixo:find("snow ball war", 1, true) and baixo:find("encerrado", 1, true) then
+            local vencedor, pontos = text:match("[Vv]encedor:%s*(.-)%s+com%s+(%d+)")
+            local eu = TD.nomeLimpo(player:getName())
+            TD.terminarEvento(vencedor and TD.nomeLimpo(vencedor) == eu and ("Snowball: VENCEU com " .. pontos .. " pontos!")
+                or ("Snowball: acabou" .. (vencedor and (", " .. vencedor .. " venceu com " .. pontos) or "")), true)
+        end
+    end
+end
+
 onTextMessage(function(mode, text)
+    TD.lerMensagemEvento(text)
     if TD.lerMensagemTasks(text) then return end
     local baixo = tostring(text or ""):lower()
     if baixo:find("exhausted", 1, true) or baixo:find("exaust", 1, true) then
@@ -2342,6 +3262,7 @@ end
 
 if onTalk then
     onTalk(function(name, level, mode, text)
+        TD.lerMensagemEvento(text)
         TD.lerMensagemTasks(tostring(text or ""))
     end)
 end
@@ -2478,6 +3399,17 @@ macro(500, function()
     if TD.ativo and not TD.voltando and CaveBot and CaveBot.isOn and CaveBot.isOn() then
         CaveBot.setOff()
         TD.log("CaveBot do bot estava ligado junto com a task: desliguei.")
+    end
+    -- evento rodando: quem anda e ataca e o painel. CaveBot/TargetBot do vBot ligados junto = os dois brigando.
+    if TD.evRun then
+        if CaveBot and CaveBot.isOn and CaveBot.isOn() then
+            CaveBot.setOff()
+            TD.logEv("CaveBot do bot estava ligado junto com o evento: desliguei.")
+        end
+        if TargetBot and TargetBot.isOn and TargetBot.isOn() then
+            TargetBot.setOff()
+            TD.logEv("TargetBot do bot estava ligado junto com o evento: desliguei.")
+        end
     end
 end)
 
@@ -2666,11 +3598,6 @@ function TD.lerHorarios(texto)
     return janelas
 end
 
-local function dentroDaJanela(agoraMin, j)
-    if j.fim >= j.ini then return agoraMin >= j.ini and agoraMin <= j.fim end
-    return agoraMin >= j.ini or agoraMin <= j.fim
-end
-
 function TD.janelasPorSemana(k)
     local ag = cfg.agenda[k]
     local total = 0
@@ -2755,10 +3682,17 @@ macro(5000, function()
         cfg.tarefaChamada = nil
         TD.origemAgenda = nil
     end
+    if not TD.evRun and TD.eventoChamado and not TD.janelaAgora(TD.eventoChamado) then
+        TD.logEv("Janela de " .. TD.EVENTOS[TD.eventoChamado].titulo .. " acabou antes de chegar na label.")
+        TD.eventoChamado = nil
+    end
 end)
 
 function TD.checkin()
-    if TD.ativo or cfg.tarefaChamada then return true end
+    -- um checkin so no CaveBot: eventos primeiro (horario fixo), depois tasks
+    local ev = TaskDemon.checkinEvento()
+    if ev ~= true then return ev end
+    if TD.ativo or cfg.tarefaChamada or TD.evRun or TD.eventoChamado then return true end
     local hoje = os.date("%Y-%m-%d")
     for _, k in ipairs(TD.AGENDAVEIS) do
         local j = TD.janelaAgora(k)
@@ -2790,6 +3724,8 @@ function TD.checkin()
 end
 
 function TD.chegadaDP()
+    -- mesma funcao na label: se quem chamou foi a agenda de eventos, comeca o evento
+    if TD.eventoChamado and not cfg.tarefaChamada then return TaskDemon.chegadaEvento() end
     local k = cfg.tarefaChamada
     if not k or TD.ativo then return true end
     cfg.tarefaChamada = nil
@@ -3012,6 +3948,7 @@ TaskDemonWindow < UIWindow
     anchors.right: parent.right
     height: 20
     UILabel
+      id: tituloVersao
       text: TASKS
       color: #FF6B6B
       font: verdana-11px-rounded
@@ -3829,10 +4766,24 @@ TaskDemonWindow < UIWindow
       id: evFase
     TDInfo
       id: evBoss
+    TDInfo
+      id: evRota
+    TDInfo
+      id: evTempo
+    TDInfo
+      id: evUltimo
+      color: #55DD55
     TDToggle
       id: evMaster
       margin-top: 8
       height: 24
+    UILabel
+      id: evLog
+      font: verdana-11px-rounded
+      color: #AAAAAA
+      text-wrap: true
+      height: 42
+      margin-top: 3
 ]])
 
 taskDemonWindow = g_ui.createWidget("TaskDemonWindow", g_ui.getRootWidget())
@@ -3841,6 +4792,7 @@ taskDemonWindow:hide()
 taskDemonWindow.onMove = function(widget, newPos) cfg.pos = {x = newPos.x, y = newPos.y} end
 
 local w = taskDemonWindow
+pcall(function() w:recursiveGetChildById("tituloVersao"):setText("TASKS " .. TD.VERSAO) end)
 local function el(id) return w:recursiveGetChildById(id) end
 local ui = {}
 for _, id in ipairs({"closeButton", "relogioTask", "relogioEvento", "mostrarTask", "mostrarEvento", "abaStatus", "abaAgenda", "abaCaveBot", "abaPK", "abaEventos",
@@ -3854,7 +4806,7 @@ for _, id in ipairs({"closeButton", "relogioTask", "relogioEvento", "mostrarTask
     "agendaInfo", "ligar", "modo", "meta", "alcance", "zerar", "evento", "restaurar", "fechar",
     "cbHunt", "cbAtualizar", "cbAgora", "perfilSel", "perfilNovo", "perfilRenomear",
     "perfilExcluir",
-    "rotaPrincipal", "rotaCidade", "rotaDP", "agTasks", "agEventos", "painelEventos", "painelTasks", "secoesEv", "evEstado", "evFase", "evBoss", "evLabelFim", "evPrev", "evNext", "evNome", "evPronto", "evCombo", "evMaster", "cbEventos",
+    "rotaPrincipal", "rotaCidade", "rotaDP", "agTasks", "agEventos", "painelEventos", "painelTasks", "secoesEv", "evEstado", "evFase", "evBoss", "evRota", "evTempo", "evUltimo", "evLog", "evLabelFim", "evPrev", "evNext", "evNome", "evPronto", "evCombo", "evMaster", "cbEventos",
     "listaGotos", "gotoAdd", "gotoRemover", "gotoInfo", "gotoGravar", "gravarSqm", "gotoWait", "gotoWaitAplicar", "buscaMax", "cbEditar", "gotoClear", "gotoLado", "gotoWaitBtn", "cbTask", "gotosScroll",
     "pkAtivo", "pkFugas"}) do
     ui[id] = el(id)
@@ -3874,7 +4826,7 @@ end
 
 local ABAS = {STATUS = "pageStatus", AGENDA = "pageAgenda", CAVEBOT = "pageCaveBot", PK = "pagePK", EVENTOS = "pageEventos", TARGET = "pageTarget"}
 local BOTOES_ABA = {STATUS = "abaStatus", AGENDA = "abaAgenda", CAVEBOT = "abaCaveBot", PK = "abaPK", EVENTOS = "abaEventos", TARGET = "abaTarget"}
-local ALTURAS = {STATUS = 398, AGENDA = 546, CAVEBOT = 636, PK = 675, EVENTOS = 318, TARGET = 398}
+local ALTURAS = {STATUS = 398, AGENDA = 546, CAVEBOT = 636, PK = 675, EVENTOS = 437, TARGET = 398}
 function TD.mostrarAba(nome)
     for aba, pagina in pairs(ABAS) do
         if aba == nome then ui[pagina]:show() else ui[pagina]:hide() end
@@ -3894,16 +4846,49 @@ ui.abaCaveBot.onClick = function() TD.mostrarAba("CAVEBOT") end
 ui.abaPK.onClick = function() TD.mostrarAba("PK") end
 ui.abaEventos.onClick = function() TD.mostrarAba("EVENTOS") end
 cfg.evLabelFimPor = cfg.evLabelFimPor or {}
+cfg.eventosAtivo = false -- sempre comeca desligado (liga clicando ou pela agenda)
 cfg.eventoPerfil = cfg.eventoPerfil or {}
 TD.evEditando = TD.evEditando or "ev_island"
 function TD.labelFimEvento(k) return cfg.evLabelFimPor[k] or cfg.evLabelFim or "inicio" end
 function TD.alternarEventos(ligar)
     if ligar == nil then ligar = not cfg.eventosAtivo end
     cfg.eventosAtivo = ligar
-    if not ligar and TD.evRun then TD.terminarEvento("eventos desligados", false) end
-    if not ligar then TD.eventoChamado = nil end
-    TD.log(ligar and "Eventos LIGADOS." or "Eventos DESLIGADOS.")
+    if not ligar and TD.evRun then TD.terminarEvento("eventos desligados", false, true) end
+    if not ligar then
+        TD.eventoChamado = nil
+        TD.marcarJanelasFeitas()
+    end
+    TD.logEv(ligar and "Eventos LIGADOS." or "Eventos DESLIGADOS.")
     TD.atualizarEventos()
+end
+
+-- Botao EVENTOS, igual ao TASK: rodando -> para; parado -> liga e ja sai andando nos gotos.
+-- perfil: CaveBot visivel na aba CAVEBOT (nil = evento selecionado na aba EVENTOS).
+function TD.botaoEventos(perfil)
+    -- ON (rodando OU so ligado esperando) -> OFF. Antes, ligado sem evento rodando caia no "liga de novo":
+    -- se o inicio falhava (task rodando, CaveBot sem gotos) o botao ficava ON pra sempre a cada clique.
+    if TD.evRun or cfg.eventosAtivo then return TD.alternarEventos(false) end
+    local k = TD.evEditando
+    if perfil then
+        k = nil
+        for _, e in ipairs(TD.ORDEM_EVENTOS) do
+            if TD.perfilDoEvento(e) == perfil then k = e break end
+        end
+        k = k or TD.evEditando
+    end
+    if not k then return end
+    -- todo evento entra pela entrada fixa do TP (perfil e opcional): liga ja andando pro TP
+    cfg.eventosAtivo = true
+    TD.iniciarEventoRota(k, perfil)
+    -- nao conseguiu comecar (o motivo ja foi pro log): volta pra OFF em vez de ficar ON parado
+    if not TD.evRun then cfg.eventosAtivo = false end
+    TD.atualizarEventos()
+end
+
+function TD.pintarEventos()
+    for _, b in ipairs({ui.evMaster, ui.cbEventos}) do
+        pintarToggle(b, TD.evRun ~= nil or cfg.eventosAtivo, "EVENTOS: ON", "EVENTOS: OFF")
+    end
 end
 function TD.atualizarEventos()
     local k = TD.evEditando
@@ -3920,8 +4905,7 @@ function TD.atualizarEventos()
     for _, n in ipairs(TD.nomesPerfis()) do ui.evCombo:addOption(n) end
     pcall(function() ui.evCombo:setCurrentOption(cfg.eventoPerfil[k] or "(nenhum)") end)
     ui.evCombo.onOptionChange = function(_, t) cfg.eventoPerfil[TD.evEditando] = (t ~= "(nenhum)") and t or nil end
-    pintarToggle(ui.evMaster, cfg.eventosAtivo, "EVENTOS: ON", "EVENTOS: OFF")
-    pintarToggle(ui.cbEventos, cfg.eventosAtivo, "EVENTOS: ON", "EVENTOS: OFF")
+    TD.pintarEventos()
 end
 local function trocarEvento(passo)
     local idx = 1
@@ -4048,18 +5032,36 @@ end)
 
 ui.evPrev.onClick = function() trocarEvento(-1) end
 ui.evNext.onClick = function() trocarEvento(1) end
-ui.evMaster.onClick = function() TD.alternarEventos() end
-ui.cbEventos.onClick = function() TD.alternarEventos() end
+ui.evMaster.onClick = function() TD.botaoEventos(nil) end
+ui.cbEventos.onClick = function() TD.botaoEventos(TD.perfilEditado) end
 TD.atualizarEventos()
 macro(500, function()
-    pintarToggle(ui.cbEventos, cfg.eventosAtivo, "EVENTOS: ON", "EVENTOS: OFF")
-    pintarToggle(ui.evMaster, cfg.eventosAtivo, "EVENTOS: ON", "EVENTOS: OFF")
+    TD.pintarEventos()
     if not w:isVisible() or TD.abaAtual ~= "EVENTOS" then return end
     local ev = TD.evRun
-    ui.evEstado:setText(ev and "Estado: RODANDO" or ("Estado: parado" .. (TD.eventoChamado and " (chamado pela agenda)" or "")))
-    local fases = {SALA = "Aguardando na sala", BOSS = "Batendo no boss", TP = "Indo para o TP"}
-    ui.evFase:setText("Fase: " .. (ev and (fases[ev.fase] or ev.fase) or "-"))
-    ui.evBoss:setText("Boss: " .. (ev and ev.bossNome and (ev.bossIdx .. "/5 " .. ev.bossNome) or "-"))
+    local titulo = ev and (TD.EVENTOS["ev_" .. ev.tipo] or {titulo = ev.tipo}).titulo
+    ui.evEstado:setText(ev and ("Estado: RODANDO " .. titulo) or
+        ("Estado: parado" .. (TD.eventoChamado and (" (agenda chamou " .. TD.EVENTOS[TD.eventoChamado].curto .. ")") or "")))
+    ui.evEstado:setColor(ev and "#55FF55" or "#FFD24A")
+    local fases = {FORCANDO = "Forcando entrar no TP (esperando abrir)", SALA = "Aguardando na sala", BOSS = "Batendo no boss", TP = "Indo para o TP", ROTA = "Andando nos gotos",
+                   FUGA = "Fugindo dos zombies", ESPERA = "Esperando comecar", JOGO = "Atirando bolas de neve"}
+    local fase = ev and (fases[ev.fase] or ev.fase) or "-"
+    if ev and ev.fase == "ROTA" and TD.estado:find("ESPERANDO", 1, true) then fase = "Esperando o TP do evento abrir" end
+    ui.evFase:setText("Fase: " .. fase)
+    if ev and ev.tipo == "snowball" then
+        ui.evBoss:setText("Bolas: " .. (ev.bolas or "?") .. " | Tiros: " .. (ev.tiros or 0) .. " | Parados: " .. (ev.nParados or 0) .. "/" .. (ev.nPlayers or 0) ..
+            " | " .. (ev.snowEstado or "-") .. (ev.alvoSnow and (" " .. ev.alvoSnow) or ""))
+    elseif ev and ev.tipo == "zombie" then
+        ui.evBoss:setText("Zombies: " .. (ev.zombies or 0) .. " na tela | perto: " ..
+            ((ev.pertoZombie or 99) < 99 and (ev.pertoZombie .. " sqm") or "-") .. " | " .. (ev.fugaEstado or "-"))
+    else
+        ui.evBoss:setText("Boss: " .. (ev and ev.bossNome and (ev.bossIdx .. "/5 " .. ev.bossNome) or "-"))
+    end
+    local rota = ev and ev.rota and TD.ROTAS and (TD.rota == "VOLTA" and TD.rotaVolta or TD.ROTAS[TD.rota])
+    ui.evRota:setText("Rota: " .. (rota and (TD.perfilAtivo .. " / " .. TD.rota .. " (goto " .. TD.wp .. "/" .. #rota .. ")") or "-"))
+    ui.evTempo:setText("Tempo: " .. (ev and formatarTempo(os.time() - ev.inicio) or "-"))
+    ui.evUltimo:setText("Ultimo: " .. (TD.evUltimo or "-"))
+    ui.evLog:setText(TD.eventoEv)
 end)
 ui.abaTarget.onClick = function() TD.mostrarAba("TARGET") end
 
@@ -4197,6 +5199,10 @@ function TD.ligarManual()
     if TD.ativo then
         TD.desligar("DESLIGADO")
         TD.caveBotEstava = nil
+        return
+    end
+    if TD.evRun then
+        TD.log("Task nao ligada: tem um evento rodando (desligue em EVENTOS).")
         return
     end
     TD.origemAgenda, TD.janelaOrigem, TD.janelaChave = nil, nil, nil
@@ -4355,9 +5361,10 @@ TD.trocarAgenda("TASKS")
 ui.restaurar.onClick = function()
     local lista = TD.agendaAba == "EVENTOS" and TD.ORDEM_EVENTOS or TD.AGENDAVEIS
     for _, k in ipairs(lista) do
-        cfg.agenda[k] = TD.agendaPadrao()
-        TD.secoes[k].label:setText("")
-        TD.secoes[k].horarios:setText("")
+        cfg.agenda[k] = TD.agendaPadrao(k)   -- eventos: volta pros horarios padrao; tasks: vazio
+        local sec = TD.secoes[k]
+        sec.label:setText(cfg.agenda[k].label)
+        sec.horarios:setText(cfg.agenda[k].horariosDia[sec.diaSel] or "")
     end
     TD.log("Agenda restaurada.")
     TD.atualizarAgenda()
@@ -4519,7 +5526,8 @@ end
 
 function TD.montarListaGotos()
     local rota = rotaEditadaTabela()
-    local rodando = TD.ativo and TD.perfilEditado == TD.perfilAtivo and TD.rotaEditada == TD.rota
+    local rodando = TD.rodandoRota and TD.rodandoRota() and TD.perfilEditado == TD.perfilAtivo and TD.rotaEditada == TD.rota
+        and not (TD.evRun and TD.rota == "CAMINHO")
     local chave = TD.perfilEditado .. "|" .. TD.rotaEditada .. "|" .. #rota
     local scroll = nil
     pcall(function() scroll = ui.gotosScroll:getValue() end)
@@ -4546,26 +5554,32 @@ function TD.montarListaGotos()
         end
         TD.chaveLista = chave
     end
-    local linhaAtual = nil
+    local linhaAtual, idxAtual = nil, nil
     for i, g in ipairs(rota) do
         local linha = TD.linhasGoto[i]
         local atual = rodando and i == TD.wp
-        local sel = (i == TD.gotoSel)
+        local sel = (i == TD.gotoSel) and not rodando   -- rodando: so o goto atual fica amarelo
         linha:setText(textoGoto(i, g, atual))
-        if atual then
-            linha:setBackgroundColor("#1E4D1EEE")
-            linha:setColor("#77FF77")
-            linhaAtual = linha
-        elseif sel then
+        if atual or sel then
             linha:setBackgroundColor(SEL_BG)
             linha:setColor("#FFD700")
+            if atual then linhaAtual, idxAtual = linha, i end
         else
             linha:setBackgroundColor(i % 2 == 0 and "#151515EE" or "#1B1B1BEE")
             linha:setColor("#CCCCCC")
         end
     end
-    if linhaAtual and ui.listaGotos.ensureChildVisible then
-        pcall(function() ui.listaGotos:ensureChildVisible(linhaAtual) end)
+    -- desce/sobe a lista sozinho pra deixar o goto atual visivel
+    if linhaAtual then
+        local ok = ui.listaGotos.ensureChildVisible and pcall(function() ui.listaGotos:ensureChildVisible(linhaAtual) end)
+        if not ok then
+            pcall(function()
+                local alt = linhaAtual:getHeight() + (ui.listaGotos:getLayout():getSpacing() or 0)
+                local vis = ui.listaGotos:getHeight()
+                local alvo = (idxAtual - 1) * alt - math.floor(vis / 2) + alt
+                ui.gotosScroll:setValue(math.max(ui.gotosScroll:getMinimum(), math.min(ui.gotosScroll:getMaximum(), alvo)))
+            end)
+        end
     end
     local info = #rota .. " gotos"
     if rodando then info = info .. " | rodando no " .. TD.wp end
@@ -4579,8 +5593,12 @@ function TD.montarListaGotos()
     TD.listaMostrada = (rodando and (TD.perfilAtivo .. "|" .. TD.rota .. "|" .. TD.wp)) or ""
 end
 
+function TD.rodandoRota() return TD.ativo or (TD.evRun and TD.evRun.rota) end
+
 function TD.seguirGotoAtual()
-    if not TD.ativo or TD.voltando then return end
+    if not TD.rodandoRota() or TD.voltando then return end
+    -- evento: a entrada do TP e fixa (nao e de perfil) e o evento pode nao ter perfil -> nao segue na lista
+    if not cfg.perfis[TD.perfilAtivo] or (TD.evRun and TD.rota == "CAMINHO") then return end
     if TD.perfilEditado ~= TD.perfilAtivo or TD.rotaEditada ~= TD.rota then
         TD.perfilEditado = TD.perfilAtivo
         TD.rotaEditada = TD.rota
@@ -4787,8 +5805,8 @@ ui.gotoWaitAplicar.onClick = function()
     local rota = rotaEditadaTabela()
     if not TD.gotoSel or not rota[TD.gotoSel] then TD.log("Selecione um goto para salvar a direcao e o wait.") return end
     local g = rota[TD.gotoSel]
-    g[4] = TD.waitEdicao
-    g[5] = TD.ladoEdicao
+    g[4] = TD.waitEdicao or false   -- false, nunca buraco: lista com buraco trava o save do storage do vBot
+    g[5] = TD.ladoEdicao or false
     TD.log("Goto " .. TD.gotoSel .. ": direcao " .. (g[5] and TD.NOME_LADO[g[5]] or "NEUTRO") ..
         ", wait " .. (g[4] and ((g[4] / 1000) .. "s") or ("padrao " .. cfg.delayGoto .. "s")) .. ".")
     TD.montarListaGotos()
@@ -4989,7 +6007,9 @@ function TD.atualizarStatus()
     ui.progresso:setText(prog .. " / " .. TD.metaDe())
     ui.progresso:setColor(prog >= TD.metaDe() and "#55FF55" or "#FFD24A")
 
-    ui.estado:setText("Estado: " .. TD.estado .. (TD.emManual() and " (MANUAL)" or ""))
+    local emEvento = TD.evRun and not TD.ativo
+    ui.estado:setText("Estado: " .. (emEvento and "DESLIGADO (evento ativo)" or
+        (TD.estado .. (TD.emManual() and " (MANUAL)" or ""))))
     ui.estado:setColor(TD.fugindo and "#FF5555" or (TD.ativo and "#55FF55" or "#FF7777"))
 
     local rota = rotaAtual()
@@ -4999,7 +6019,7 @@ function TD.atualizarStatus()
     elseif TD.ativo and TD.rota == "VOLTA" then
         extra = " | voltando ao DP"
     end
-    ui.rota:setText("Rota: " .. TD.rota .. " (goto " .. TD.wp .. "/" .. (rota and #rota or 0) .. ")" .. extra)
+    ui.rota:setText(emEvento and "Rota: -" or ("Rota: " .. TD.rota .. " (goto " .. TD.wp .. "/" .. (rota and #rota or 0) .. ")" .. extra))
 
     if TD.alvo then
         ui.alvo:setText("Alvo: " .. TD.alvo:getName() .. " (" .. dist(player:getPosition(), TD.alvo:getPosition()) .. " sqm)")
