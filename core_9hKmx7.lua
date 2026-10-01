@@ -300,7 +300,7 @@ function TD.log(t)
 end
 -- versao do codigo: aparece no log ao carregar, pra confirmar que o vBot esta rodando o arquivo novo
 -- SUBIR a cada entrega (1.0, 1.1, 1.2 ...): aparece no titulo do painel "TASKS 1.0" e no log ao carregar
-TD.VERSAO = "2.3"
+TD.VERSAO = "2.7"
 TD.log("Task Demon versao " .. TD.VERSAO .. " carregado.")
 -- aviso dos perfis: so no terminal do cliente (o usuario nao quer isso no log do painel)
 if TaskDemon.avisoPerfis then print("[Task Demon] " .. TaskDemon.avisoPerfis) end
@@ -2006,6 +2006,8 @@ end
 
 TD.ZOMBIE_VISAO_X = 18         -- tela afastada: sqm visiveis pros lados (tile que o cliente nao tem conta como desconhecido)
 TD.ZOMBIE_VISAO_Y = 14         -- tela afastada: sqm visiveis pra cima/baixo
+TD.ZOMBIE_SEM_PARADO = 4      -- zombie a essa distancia ou menos: proibido ficar parado (tem que fugir)
+TD.ZOMBIE_VOLTA = 1.3          -- voltar pro lado oposto so se for 30% melhor que a outra opcao (anti-samba)
 TD.ZOMBIE_TEIMA = 0.9          -- mantem a direcao anterior se a nota dela for >= 90% da melhor (anti-samba)
 TD.ZOMBIE_CAPTURA = 2          -- a 2 sqm o jogo ja conta como capturado
 TD.ZOMBIE_ALERTA = 6           -- comeca a fugir com zombie a essa distancia
@@ -2154,6 +2156,25 @@ function TD.decidirFugaZombie(ev, p, zsTela)
         end
         ev.ultDir = passo
         return passo, "Sem saida" .. info
+    end
+    -- 1) zombie a <= TD.ZOMBIE_SEM_PARADO sqm: ficar parado nao e opcao (video top 2: ficou "Parado" com o
+    --    zombie vindo de 6 ate 3 sqm e nao pegou a brecha). Sim: 8 zombies, parado perto 3,1 -> 0,6/partida.
+    local function filtrar(cond)
+        local resto = {}
+        for _, o in ipairs(porDir) do if not cond(o) then table.insert(resto, o) end end
+        if #resto > 0 then porDir = resto end
+    end
+    if ev.pertoZombie <= TD.ZOMBIE_SEM_PARADO then filtrar(function(o) return o.dir == nil end) end
+    -- 2) anti-volta: so volta pro lado oposto do ultimo passo se for >= TD.ZOMBIE_VOLTA x a melhor outra opcao
+    if ev.ultDir ~= nil then
+        local dx, dy = deltaDe(ev.ultDir)
+        local oposta = nil
+        for _, d in ipairs(DELTAS) do if d[1] == -dx and d[2] == -dy and (dx ~= 0 or dy ~= 0) then oposta = d[3] end end
+        local melhorOutra = nil
+        for _, o in ipairs(porDir) do if o.dir ~= oposta and (not melhorOutra or o.nota > melhorOutra) then melhorOutra = o.nota end end
+        if oposta ~= nil and melhorOutra then
+            filtrar(function(o) return o.dir == oposta and o.nota < TD.ZOMBIE_VOLTA * melhorOutra end)
+        end
     end
     local escolha = porDir[1]
     for _, o in ipairs(porDir) do   -- anti-samba: fica na direcao anterior se for quase tao boa
@@ -3148,6 +3169,16 @@ function TD.lerMensagemEvento(text)
         local eu = TD.nomeLimpo(player:getName())
         local devorado = text:match("%]%s*(.-)%s+foi devorado")
         local vencedor = text:match("%]%s*(.-)%s+venceu")
+        -- quantos restam: o numero que vem na MESMA mensagem do "foi devorado", tirando o horario (19:37 / 19:37:33)
+        -- e o nome do jogador (nome pode ter numero)
+        local restam = nil
+        if devorado then
+            local resto = text:gsub("%d+:%d+:?%d*", "")
+            local i, f = resto:find(devorado, 1, true)
+            if i then resto = resto:sub(1, i - 1) .. resto:sub(f + 1) end
+            restam = resto:match("(%d+)")
+        end
+        if restam then ev.restam = tonumber(restam) end
         if baixo:find("teleport foi fechado", 1, true) then
             ev.fase = "FUGA"
             TD.logEv("Zombie Event comecou! Fugindo dos zombies.")
@@ -3156,7 +3187,8 @@ function TD.lerMensagemEvento(text)
         elseif vencedor then
             TD.terminarEvento(TD.nomeLimpo(vencedor) == eu and "Zombie: VENCEU!" or ("Zombie: acabou, " .. vencedor .. " venceu"), true)
         elseif devorado then
-            TD.logEv(devorado .. " foi devorado.")
+            ev.ultimoDevorado = devorado
+            TD.logEv(devorado .. " foi devorado." .. (ev.restam and (" Restam " .. ev.restam .. " na arena.") or ""))
         end
     elseif ev.tipo == "firestorm" and baixo:find("firestorm", 1, true) then
         -- "[FireStorm] Você foi atingido e removido do evento!"
@@ -4913,22 +4945,23 @@ local function trocarEvento(passo)
     TD.evEditando = TD.ORDEM_EVENTOS[(idx - 1 + passo) % #TD.ORDEM_EVENTOS + 1]
     TD.atualizarEventos()
 end
-function TD.proximaJanela(lista, soProntos)
+-- atraso (segundos, opcional): conta ate horario da agenda + atraso (ex.: abertura real do TP do evento)
+function TD.proximaJanela(lista, soProntos, atraso)
     local agora = os.time()
     local melhor, melhorK = nil, nil
     for _, k in ipairs(lista) do
         local ag = cfg.agenda[k]
         local ok = ag and ag.ativo and (not soProntos or (TD.EVENTOS[k] and TD.EVENTOS[k].pronto))
         if ok then
-            if TD.janelaAgora(k) then return 0, k end
+            if not atraso and TD.janelaAgora(k) then return 0, k end
             local permitidos = TD.TAREFAS[k] and TD.TAREFAS[k].dias
-            for d = 0, 7 do
+            for d = atraso and -1 or 0, 7 do
                 local t = os.date("*t", agora + d * 86400)
                 local dia = TD.DIAS[t.wday]
                 if not permitidos or permitidos[dia] then
                     local base = os.time({year = t.year, month = t.month, day = t.day, hour = 0, min = 0, sec = 0})
                     for _, j in ipairs(TD.janelasDaTask(k, ag.horariosDia[dia]) or {}) do
-                        local inicio = base + j.ini * 60
+                        local inicio = base + j.ini * 60 + (atraso or 0)
                         if inicio > agora and (not melhor or inicio - agora < melhor) then
                             melhor, melhorK = inicio - agora, k
                         end
@@ -4953,10 +4986,12 @@ end
 cfg.mostrarTask = cfg.mostrarTask == true
 cfg.mostrarEvento = cfg.mostrarEvento == true
 TD.prox = {}
+TD.EVENTO_ABRE_APOS_MIN = 3   -- o TP do evento abre 3 min depois do horario da agenda
 function TD.calcularProximos()
     local agora = os.time()
     local segT, kT = TD.proximaJanela(TD.AGENDAVEIS)
-    local segE, kE = TD.proximaJanela(TD.ORDEM_EVENTOS, false)
+    -- evento: em cima do personagem conta ate a ABERTURA do TP (agenda + 3 min: 12:57 -> 13:00)
+    local segE, kE = TD.proximaJanela(TD.ORDEM_EVENTOS, false, TD.EVENTO_ABRE_APOS_MIN * 60)
     TD.prox = {
         task = segT and {fim = agora + segT, nome = TD.TAREFAS[kT].curto} or nil,
         evento = segE and {fim = agora + segE, nome = TD.EVENTOS[kE].curto} or nil,
@@ -5052,7 +5087,7 @@ macro(500, function()
         ui.evBoss:setText("Bolas: " .. (ev.bolas or "?") .. " | Tiros: " .. (ev.tiros or 0) .. " | Parados: " .. (ev.nParados or 0) .. "/" .. (ev.nPlayers or 0) ..
             " | " .. (ev.snowEstado or "-") .. (ev.alvoSnow and (" " .. ev.alvoSnow) or ""))
     elseif ev and ev.tipo == "zombie" then
-        ui.evBoss:setText("Zombies: " .. (ev.zombies or 0) .. " na tela | perto: " ..
+        ui.evBoss:setText((ev.restam and ("Restam " .. ev.restam .. " | ") or "") .. "Zombies: " .. (ev.zombies or 0) .. " na tela | perto: " ..
             ((ev.pertoZombie or 99) < 99 and (ev.pertoZombie .. " sqm") or "-") .. " | " .. (ev.fugaEstado or "-"))
     else
         ui.evBoss:setText("Boss: " .. (ev and ev.bossNome and (ev.bossIdx .. "/5 " .. ev.bossNome) or "-"))
