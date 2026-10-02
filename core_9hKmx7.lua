@@ -20,7 +20,7 @@ TaskDemon.TAREFAS = {
     dragon       = {nome = "Demolisher Dragon",               titulo = "Dragon (TESTE)",       curto = "Dragon",       meta = 50},
 }
 TaskDemon.ORDEM = {"infernal", "goshnar", "merlin", "angrybird", "bloodsugar", "emberwing", "thundergiant", "dragon"}
-TaskDemon.AGENDAVEIS = {"infernal", "goshnar", "merlin", "angrybird", "bloodsugar", "emberwing", "thundergiant", "dragon"}
+TaskDemon.AGENDAVEIS = {"infernal", "goshnar", "merlin", "angrybird", "bloodsugar", "emberwing", "thundergiant"}
 TaskDemon.DIAS = {"dom", "seg", "ter", "qua", "qui", "sex", "sab"}
 
 TaskDemon.TEMPO_HIT = 2
@@ -52,6 +52,12 @@ cfg.progServidor = cfg.progServidor or {}
 cfg.progBase = cfg.progBase or {}
 cfg.labelVolta = cfg.labelVolta or ""
 cfg.modoAtaque = cfg.modoAtaque or "DISTANCIA"
+-- modo de ataque por tarefa (MELEE/DISTANCIA); sem escolha a tarefa usa cfg.modoAtaque (o modo antigo, global)
+cfg.modos = cfg.modos or {}
+function TaskDemon.modoDe(k)
+    k = k or cfg.tarefa
+    return cfg.modos[k] or cfg.modoAtaque
+end
 cfg.tempoPrincipal = cfg.tempoPrincipal or tostring(cfg.minPrincipal or 10)
 cfg.minPrincipal = nil
 
@@ -221,7 +227,7 @@ cfg.cb.task, cfg.cb.ativo, cfg.cb.labelHunt = nil, nil, nil
 -- tem agenda daquele evento ou no botao Restaurar; o que a pessoa mudar fica salvo e vale.
 TaskDemon.AGENDA_EVENTOS_PADRAO = {
     ev_snowball  = {horarios = "14:27", label = "tasks"},
-    ev_island    = {horarios = "12:57, 18:57, 23:27", label = "tasks"},
+    ev_island    = {horarios = "12:57, 18:57, 22:27", label = "tasks"},
     ev_firestorm = {horarios = "12:27, 18:27, 23:27", label = "tasks"},
     ev_zombie    = {horarios = "13:27, 19:27, 22:57", label = "tasks"},
 }
@@ -300,7 +306,7 @@ function TD.log(t)
 end
 -- versao do codigo: aparece no log ao carregar, pra confirmar que o vBot esta rodando o arquivo novo
 -- SUBIR a cada entrega (1.0, 1.1, 1.2 ...): aparece no titulo do painel "TASKS 1.0" e no log ao carregar
-TD.VERSAO = "2.7"
+TD.VERSAO = "3.6"
 TD.log("Task Demon versao " .. TD.VERSAO .. " carregado.")
 -- aviso dos perfis: so no terminal do cliente (o usuario nao quer isso no log do painel)
 if TaskDemon.avisoPerfis then print("[Task Demon] " .. TaskDemon.avisoPerfis) end
@@ -916,7 +922,7 @@ function TD.andarRota()
     if TD.ultimaPos and mesmaPos(p, TD.ultimaPos) then
         local parado = t - TD.paradoDesdeMs
         if parado >= TD.MS_PRESO and not TD.gotoExato(TD.wp) then
-            TD.log("Bloqueado no goto " .. TD.wp .. ". Indo para o próximo.")
+            TD.log("Bloqueado no goto " .. TD.wp .. ". Indo para o proximo.")
             TD.proximoWp()
             TD.paradoDesdeMs = t
             TD.destinoAtual = nil
@@ -1000,7 +1006,7 @@ function TD.planejarSequencia(lista)
 end
 
 function TD.alcanceAtual()
-    return cfg.modoAtaque == "MELEE" and 1 or cfg.alcance
+    return TaskDemon.modoDe() == "MELEE" and 1 or cfg.alcance
 end
 
 cfg.target = cfg.target or {}
@@ -1029,7 +1035,7 @@ function TD.confirmarHit(c, origem)
     if TD.focoTrap and TD.alvo == c then return end
     TD.alvo = nil
     TD.saiuDaRota = true
-    TD.log("Hit confirmado (" .. origem .. "). Próximo!")
+    TD.log("Hit confirmado (" .. origem .. "). Proximo!")
     TD.irProProximo()
 end
 
@@ -1097,7 +1103,7 @@ function TD.fugirPK(atacante)
     if TD.marcarInimigo then TD.marcarInimigo(atacante) end
     if TD.entrarEmPerigo then TD.entrarEmPerigo() end
     if not cfg.pkAtivo then
-        TD.log("Atacado por PK (" .. atacante .. "), mas a proteção está desligada.")
+        TD.log("Atacado por PK (" .. atacante .. "), mas a protecao esta desligada.")
         return
     end
     TD.fugas = TD.fugas + 1
@@ -2676,8 +2682,12 @@ macro(50, TD.protegido("eventoRota", function()
     if not ev.dentro and TD.rota == "CAMINHO" and pAgora and pAgora.x == ult[1] and pAgora.y == ult[2] and pAgora.z == ult[3] then
         ev.fase = "FORCANDO"
         local t = agoraMs()
-        if not andando() and t >= (ev.proxForca or 0) then
+        -- nao espera "parar de andar": um auto walk travado deixava andando() sempre true e ele nunca forcava
+        if t >= (ev.proxForca or 0) then
             ev.proxForca = t + 1000
+            ev.forcadas = (ev.forcadas or 0) + 1
+            if ev.forcadas % 10 == 1 then TD.logEv("Forcando SOUTH no TP do evento (tentativa " .. ev.forcadas .. ").") end
+            if player.stopAutoWalk then pcall(function() player:stopAutoWalk() end) end
             TD.passoProprioAte = t + 600
             g_game.walk(TD.LADOS.S)
         end
@@ -2743,7 +2753,7 @@ function TD.ligar()
         TD.targetBotEstava = TargetBot.isOn()
         if TargetBot.isOn() then TargetBot.setOff() end
     end
-    if g_game.setChaseMode then g_game.setChaseMode(cfg.modoAtaque == "MELEE" and 1 or 0) end
+    if g_game.setChaseMode then g_game.setChaseMode(TaskDemon.modoDe() == "MELEE" and 1 or 0) end
     TD.fugindo = false
     TD.voltando = false
     if cfg.inicioTask == 0 then cfg.inicioTask = os.time() end
@@ -2765,6 +2775,8 @@ function TD.desligar(motivo)
     TD.fugindo = false
     TD.voltando = false
     if g_game.cancelAttack then g_game.cancelAttack() end
+    -- task OFF/terminou: desliga o auto chase (o MELEE liga) pra ele nao ficar salvo no cliente
+    if g_game.setChaseMode then pcall(function() g_game.setChaseMode(0) end) end
     if TargetBot and TargetBot.setOn and TD.targetBotEstava then TargetBot.setOn() end
     TD.estado = motivo or "DESLIGADO"
     TD.log("Task parada: " .. (motivo or "manual"))
@@ -2807,7 +2819,7 @@ function TD.finalizar(motivo)
         end
         TD.destinoAtual = nil
         TD.estado = "VOLTANDO AO DP"
-        TD.log((motivo or "Task concluída") .. ". Voltando ao DP.")
+        TD.log((motivo or "Task concluida") .. ". Voltando ao DP.")
     else
         TD.entregarAoBot(motivo)
     end
@@ -2831,7 +2843,7 @@ function TD.iniciar(tarefa, labelVolta)
     if tarefa and TD.TAREFAS[tarefa] then cfg.tarefa = tarefa end
     if labelVolta then cfg.labelVolta = labelVolta end
     if TD.progresso() >= TD.metaDe() then
-        TD.log("Task " .. TD.tarefaAtual().titulo .. " já estava concluída.")
+        TD.log("Task " .. TD.tarefaAtual().titulo .. " ja estava concluida.")
         if cfg.labelVolta ~= "" then CaveBot.gotoLabel(cfg.labelVolta) end
         return true
     end
@@ -2854,7 +2866,7 @@ macro(50, TD.protegido("alvos", function()
     end
 
     if TD.progresso() >= TD.metaDe() then
-        TD.finalizar("Task concluída")
+        TD.finalizar("Task concluida")
         return
     end
 
@@ -3045,7 +3057,7 @@ macro(50, TD.protegido("alvos", function()
         TD.estado = "TARGETANDO (" .. TD.novosNaTela .. " RESTANTES)"
     else
         TD.estado = "ROTA " .. TD.rota
-        if cfg.modoAtaque == "MELEE" and g_game.getAttackingCreature() and g_game.cancelAttack then
+        if TaskDemon.modoDe() == "MELEE" and g_game.getAttackingCreature() and g_game.cancelAttack then
             g_game.cancelAttack()
         end
     end
@@ -3086,7 +3098,7 @@ macro(50, TD.protegido("andar", function()
 
     if TD.alvo then
         TD.saiuDaRota = true
-        if TD.emManual() or cfg.modoAtaque == "MELEE" then return end
+        if TD.emManual() or TaskDemon.modoDe() == "MELEE" then return end
         local ap = TD.alvo:getPosition()
         if dist(player:getPosition(), ap) > cfg.alcance then
             TD.irPara(ap)
@@ -3324,8 +3336,9 @@ macro(200, function()
         texto, cor = "PZ " .. formatarTempo(math.max(0, resta)), "#7FDBFF"
     elseif TD.ativo then
         texto = "[" .. TD.progresso() .. "/" .. TD.metaDe() .. "]"
-    elseif not TD.evRun and TD.textoContagem then
-        texto, cor = TD.textoContagem()
+    elseif TD.textoContagem then
+        -- com evento rodando continua a contagem: a agenda chama 12:57 mas o TP so abre 13:00
+        texto, cor = TD.textoContagem(TD.evRun ~= nil)
     end
     if texto ~= TD.textoPlayer then
         TD.textoPlayer = texto
@@ -3776,7 +3789,7 @@ end
 function TD.trocarCaveBot(nome)
     if not nome or nome == "" then return false end
     if not (CaveBot and CaveBot.setCurrentProfile) then
-        TD.log("Seu vBot não permite trocar o CaveBot por script (falta setCurrentProfile).")
+        TD.log("Seu vBot nao permite trocar o CaveBot por script (falta setCurrentProfile).")
         return false
     end
     if TD.cavebotAtual() == nome then return true end
@@ -3953,7 +3966,7 @@ TDSecao < Panel
       spacing: 2
   TDTitulo
     id: tituloHorarios
-    text: Horários
+    text: Horarios
   TDCampo
     id: horarios
   UILabel
@@ -4847,8 +4860,8 @@ w.ui = ui
 
 local VERDE_BG, VERMELHO_BG, CINZA_BG = "#0F4D0FEE", "#4D0F0FEE", "#262626EE"
 local SEL_BG = "#3A3000EE"
-local NOME_DIA = {dom = "DOMINGO", seg = "SEGUNDA", ter = "TERÇA", qua = "QUARTA",
-                  qui = "QUINTA", sex = "SEXTA", sab = "SÁBADO"}
+local NOME_DIA = {dom = "DOMINGO", seg = "SEGUNDA", ter = "TERCA", qua = "QUARTA",
+                  qui = "QUINTA", sex = "SEXTA", sab = "SABADO"}
 
 local function pintarToggle(botao, ligado, textoOn, textoOff)
     botao:setText(ligado and textoOn or textoOff)
@@ -4987,17 +5000,47 @@ cfg.mostrarTask = cfg.mostrarTask == true
 cfg.mostrarEvento = cfg.mostrarEvento == true
 TD.prox = {}
 TD.EVENTO_ABRE_APOS_MIN = 3   -- o TP do evento abre 3 min depois do horario da agenda
+-- horario REAL que o TP de cada evento abre (todos os dias). A contagem em cima do personagem usa esta lista
+-- (a agenda continua chamando antes, com os horarios dela).
+TD.ABERTURA_TP = {
+    ev_snowball  = {"14:30"},
+    ev_island    = {"13:00", "19:00", "22:30"},
+    ev_firestorm = {"12:30", "18:30", "23:30"},
+    ev_zombie    = {"13:30", "19:30", "23:00"},
+}
+-- proxima abertura de TP entre os eventos com agenda ATIVA: segundos ate ela, evento
+function TD.proximaAberturaTp()
+    local agora = os.time()
+    local melhor, melhorK = nil, nil
+    for _, k in ipairs(TD.ORDEM_EVENTOS) do
+        local ag = cfg.agenda[k]
+        if ag and ag.ativo and TD.ABERTURA_TP[k] then
+            for d = 0, 1 do
+                local t = os.date("*t", agora + d * 86400)
+                for _, h in ipairs(TD.ABERTURA_TP[k]) do
+                    local hh, mm = h:match("^(%d+):(%d+)$")
+                    local inicio = os.time({year = t.year, month = t.month, day = t.day, hour = tonumber(hh), min = tonumber(mm), sec = 0})
+                    if inicio > agora and (not melhor or inicio - agora < melhor) then
+                        melhor, melhorK = inicio - agora, k
+                    end
+                end
+            end
+        end
+    end
+    return melhor, melhorK
+end
 function TD.calcularProximos()
     local agora = os.time()
     local segT, kT = TD.proximaJanela(TD.AGENDAVEIS)
-    -- evento: em cima do personagem conta ate a ABERTURA do TP (agenda + 3 min: 12:57 -> 13:00)
-    local segE, kE = TD.proximaJanela(TD.ORDEM_EVENTOS, false, TD.EVENTO_ABRE_APOS_MIN * 60)
+    -- evento: em cima do personagem conta ate a ABERTURA real do TP (TD.ABERTURA_TP)
+    local segE, kE = TD.proximaAberturaTp()
     TD.prox = {
         task = segT and {fim = agora + segT, nome = TD.TAREFAS[kT].curto} or nil,
         evento = segE and {fim = agora + segE, nome = TD.EVENTOS[kE].curto} or nil,
     }
 end
-function TD.textoContagem()
+-- soEvento: evento ja rodando (indo pro TP antes de abrir) -> mostra so a contagem do evento
+function TD.textoContagem(soEvento)
     local agora = os.time()
     local vencido = (TD.prox.task and TD.prox.task.fim < agora) or (TD.prox.evento and TD.prox.evento.fim < agora)
     if vencido and agora ~= TD.ultimoCalcProx then
@@ -5006,7 +5049,7 @@ function TD.textoContagem()
     end
     local escolhido, cor = nil, "#FFFFFF"
     local t, e = cfg.mostrarTask and TD.prox.task, cfg.mostrarEvento and TD.prox.evento
-    if t and (t.fim - agora > 600 or t.fim - agora <= 0) then t = nil end
+    if soEvento or (t and (t.fim - agora > 600 or t.fim - agora <= 0)) then t = nil end
     if e and (e.fim - agora > 600 or e.fim - agora <= 0) then e = nil end
     if t and (not e or t.fim <= e.fim) then escolhido, cor = t, "#FFD24A"
     elseif e then escolhido, cor = e, "#7FB2FF" end
@@ -5260,8 +5303,8 @@ ui.cbTask.onClick = function()
     TD.atualizarPainel()
 end
 ui.modo.onClick = function()
-    cfg.modoAtaque = cfg.modoAtaque == "MELEE" and "DISTANCIA" or "MELEE"
-    if TD.ativo and g_game.setChaseMode then g_game.setChaseMode(cfg.modoAtaque == "MELEE" and 1 or 0) end
+    cfg.modos[cfg.tarefa] = TaskDemon.modoDe() == "MELEE" and "DISTANCIA" or "MELEE"
+    if TD.ativo and g_game.setChaseMode then g_game.setChaseMode(TaskDemon.modoDe() == "MELEE" and 1 or 0) end
     TD.atualizarPainel()
 end
 function TD.resetarTarefa(k)
@@ -5421,13 +5464,13 @@ function TD.atualizarAgenda()
                 b:setColor(tem and "#77FF77" or "#777777")
             end
         end
-        sec.tituloHorarios:setText("Horários de " .. NOME_DIA[sec.diaSel])
+        sec.tituloHorarios:setText("Horarios de " .. NOME_DIA[sec.diaSel])
         local n, diaErro = TD.janelasPorSemana(k)
         if n then
             sec.janelas:setText(n .. " janelas por semana")
             sec.janelas:setColor(n > 0 and "#55DD55" or "#AAAAAA")
         else
-            sec.janelas:setText("Horário inválido em " .. NOME_DIA[diaErro])
+            sec.janelas:setText("Horario invalido em " .. NOME_DIA[diaErro])
             sec.janelas:setColor("#FF5555")
         end
     end
@@ -5531,7 +5574,7 @@ end
 ui.perfilExcluir.onClick = function()
     local nome = TD.perfilEditado
     if #TD.nomesPerfis() <= 1 then TD.log("Precisa ter pelo menos um CaveBot.") return end
-    if TD.ativo and TD.perfilAtivo == nome then TD.log("Esse CaveBot está em uso pela task.") return end
+    if TD.ativo and TD.perfilAtivo == nome then TD.log("Esse CaveBot esta em uso pela task.") return end
     if not TD.excluirConfirmaAte or os.time() > TD.excluirConfirmaAte then
         TD.excluirConfirmaAte = os.time() + 3
         ui.perfilExcluir:setText("CONFIRM")
@@ -5543,7 +5586,7 @@ ui.perfilExcluir.onClick = function()
     cfg.perfis[nome] = nil
     TD.perfilEditado = TD.nomesPerfis()[1]
     for k, v in pairs(cfg.perfilTarefa) do if v == nome then cfg.perfilTarefa[k] = TD.perfilEditado end end
-    TD.log("CaveBot '" .. nome .. "' excluído.")
+    TD.log("CaveBot '" .. nome .. "' excluido.")
     TD.preencherPerfis()
     TD.montarListaGotos()
 end
@@ -5557,6 +5600,19 @@ local function textoGoto(i, g, atual)
     if w then extras = extras .. "  " .. (w / 1000) .. "s" end
     if g[5] and TD.NOME_LADO[g[5]] then extras = extras .. "  " .. TD.NOME_LADO[g[5]] end
     return string.format("%s%02d   %d, %d, %d%s", atual and ">> " or "   ", i, g[1], g[2], g[3], extras)
+end
+
+-- desce/sobe a lista de gotos ate a linha ficar visivel
+local function mostrarLinhaGoto(linha, idx)
+    local ok = ui.listaGotos.ensureChildVisible and pcall(function() ui.listaGotos:ensureChildVisible(linha) end)
+    if not ok then
+        pcall(function()
+            local alt = linha:getHeight() + (ui.listaGotos:getLayout():getSpacing() or 0)
+            local vis = ui.listaGotos:getHeight()
+            local alvo = (idx - 1) * alt - math.floor(vis / 2) + alt
+            ui.gotosScroll:setValue(math.max(ui.gotosScroll:getMinimum(), math.min(ui.gotosScroll:getMaximum(), alvo)))
+        end)
+    end
 end
 
 function TD.montarListaGotos()
@@ -5605,17 +5661,7 @@ function TD.montarListaGotos()
         end
     end
     -- desce/sobe a lista sozinho pra deixar o goto atual visivel
-    if linhaAtual then
-        local ok = ui.listaGotos.ensureChildVisible and pcall(function() ui.listaGotos:ensureChildVisible(linhaAtual) end)
-        if not ok then
-            pcall(function()
-                local alt = linhaAtual:getHeight() + (ui.listaGotos:getLayout():getSpacing() or 0)
-                local vis = ui.listaGotos:getHeight()
-                local alvo = (idxAtual - 1) * alt - math.floor(vis / 2) + alt
-                ui.gotosScroll:setValue(math.max(ui.gotosScroll:getMinimum(), math.min(ui.gotosScroll:getMaximum(), alvo)))
-            end)
-        end
-    end
+    if linhaAtual then mostrarLinhaGoto(linhaAtual, idxAtual) end
     local info = #rota .. " gotos"
     if rodando then info = info .. " | rodando no " .. TD.wp end
     if TD.gotoSel then info = info .. " | selecionado: " .. TD.gotoSel end
@@ -5631,6 +5677,13 @@ end
 function TD.rodandoRota() return TD.ativo or (TD.evRun and TD.evRun.rota) end
 
 function TD.seguirGotoAtual()
+    -- goto novo (ADD / gravar): desce a lista ate ele. Feito aqui (macro de 500ms) e nao na hora,
+    -- porque logo apos criar a linha a lista ainda nao recalculou o tamanho.
+    if TD.rolarSel then
+        TD.rolarSel = nil
+        local linha = TD.gotoSel and TD.linhasGoto[TD.gotoSel]
+        if linha then mostrarLinhaGoto(linha, TD.gotoSel) end
+    end
     if not TD.rodandoRota() or TD.voltando then return end
     -- evento: a entrada do TP e fixa (nao e de perfil) e o evento pode nao ter perfil -> nao segue na lista
     if not cfg.perfis[TD.perfilAtivo] or (TD.evRun and TD.rota == "CAMINHO") then return end
@@ -5661,6 +5714,7 @@ ui.gotoAdd.onClick = function()
     local pos = TD.gotoSel and (TD.gotoSel + 1) or (#rota + 1)
     table.insert(rota, pos, {p.x, p.y, p.z})
     TD.gotoSel = pos
+    TD.rolarSel = true
     TD.log("Goto " .. pos .. " adicionado em " .. TD.perfilEditado .. " / " .. TD.rotaEditada .. ".")
     TD.montarListaGotos()
 end
@@ -5713,6 +5767,7 @@ macro(50, function()
         end
         table.insert(rota, {p.x, p.y, p.z})
         TD.gotoSel = #rota
+        TD.rolarSel = true
         TD.montarListaGotos()
     else
         local ult = rota[#rota]
@@ -5720,6 +5775,7 @@ macro(50, function()
         if not ult or ult[3] ~= p.z or math.max(math.abs(ult[1] - p.x), math.abs(ult[2] - p.y)) >= passo then
             table.insert(rota, {p.x, p.y, p.z})
             TD.gotoSel = #rota
+            TD.rolarSel = true
             TD.montarListaGotos()
         end
     end
@@ -6008,7 +6064,7 @@ function TD.atualizarPK()
     for _ in pairs(TD.barreirasVistas) do barreiras = barreiras + 1 end
     ui.fugaStatus:setText("Fuga: " .. TD.statusFuga .. (barreiras > 0 and (" | " .. barreiras .. " MW/grav na tela") or ""))
     pintarToggle(ui.pkAtivo, cfg.pkAtivo, "FUGA PELO DP NA TASK: ATIVA", "FUGA PELO DP NA TASK: DESLIGADA")
-    ui.pkFugas:setText("Fugas nesta sessão: " .. TD.fugas)
+    ui.pkFugas:setText("Fugas nesta sessao: " .. TD.fugas)
 end
 ui.pkAtivo.onClick = function()
     cfg.pkAtivo = not cfg.pkAtivo
@@ -6070,7 +6126,7 @@ function TD.atualizarStatus()
 
     ui.ligar:setText(TD.ativo and "TASK: ON" or "TASK: OFF")
     ui.ligar:setColor(TD.ativo and "#55FF55" or "#FF7777")
-    ui.modo:setText("MODO: " .. cfg.modoAtaque)
+    ui.modo:setText("MODO: " .. TaskDemon.modoDe())
     ui.evento:setText(TD.evento)
 end
 
