@@ -317,7 +317,7 @@ function TD.log(t)
 end
 -- versao do codigo: aparece no log ao carregar, pra confirmar que o vBot esta rodando o arquivo novo
 -- SUBIR a cada entrega (1.0, 1.1, 1.2 ...): aparece no titulo do painel "TASKS 1.0" e no log ao carregar
-TD.VERSAO = "4.3"
+TD.VERSAO = "4.4"
 TD.log("Task Demon versao " .. TD.VERSAO .. " carregado.")
 -- aviso dos perfis: so no terminal do cliente (o usuario nao quer isso no log do painel)
 if TaskDemon.avisoPerfis then print("[Task Demon] " .. TaskDemon.avisoPerfis) end
@@ -3003,7 +3003,13 @@ macro(50, TD.protegido("alvos", function()
         TD.focoTrap = true
     elseif TD.focoTrap then
         TD.focoTrap = false
-        TD.alvo = nil
+        -- saiu do "trapado": se o bicho que ele estava matando e da task, CONTINUA nele (antes largava e
+        -- voltava pra rota no meio da luta: "targeta, anda, perde target")
+        local okT, daTask = pcall(function() return TD.alvo and TD.ehDaTask(TD.alvo) end)
+        if not (okT and daTask) then
+            TD.log("Largou o alvo: saiu do modo trapado.")
+            TD.alvo = nil
+        end
     end
 
     local alvo = TD.alvo
@@ -3014,6 +3020,7 @@ macro(50, TD.protegido("alvos", function()
         end
         local distAlvo = dist(player:getPosition(), alvo:getPosition())
         if not valido then
+            TD.log("Largou o alvo: saiu da lista (fora da tela, morreu ou pulado).")
             TD.alvo = nil
         elseif distAlvo > TD.alcanceAtual() then
             TD.alvoDesde = agora
@@ -3030,6 +3037,8 @@ macro(50, TD.protegido("alvos", function()
             local semCaminho = not TD.caminhoChecado[idAlvo]
             local limiteAprox = TD.cfgTarget().modo == "1" and TD.APROXIMAR_S or TD.APROXIMAR_MATAR_S
             if semCaminho or agora - (TD.aproximandoDesde or agora) >= limiteAprox then
+                TD.log("Largou o alvo: " .. (semCaminho and "sem caminho ate ele" or ("nao chegou perto em " .. limiteAprox .. "s")) ..
+                    " (dist " .. distAlvo .. ", alcance " .. TD.alcanceAtual() .. ").")
                 TD.pulados[alvo:getId()] = agora + 10
                 TD.alvo = nil
                 TD.aproximandoDesde = nil
@@ -3054,6 +3063,8 @@ macro(50, TD.protegido("alvos", function()
                     TD.alvoHpUlt = hp
                     TD.alvoDesde = agora
                 elseif agora - TD.alvoDesde >= ((g_game.getAttackingCreature() == alvo) and TD.MATAR_SEM_DANO_S or 6) then
+                    TD.log("Largou o alvo: vida nao caiu (" .. hp .. "%), atacando=" ..
+                        tostring(g_game.getAttackingCreature() == alvo) .. ".")
                     TD.pulados[alvo:getId()] = agora + TD.TEMPO_PULO
                     TD.alvo = nil
                     lista = TD.listarAlvos()
@@ -3170,8 +3181,25 @@ macro(50, TD.protegido("andar", function()
     if TD.fugindo then TD.andarRota() return end
 
     if TD.alvo then
+        -- com alvo a rota fica PAUSADA; quando o alvo acaba (morreu / chegou nos 50%), TD.saiuDaRota faz ela
+        -- continuar do goto em que estava (TD.retomarRota) e seguir pros proximos
         TD.saiuDaRota = true
-        if TD.emManual() or TaskDemon.modoDe() == "MELEE" then return end
+        if TD.emManual() then return end
+        if TaskDemon.modoDe() == "MELEE" then
+            -- Matar 100% / Bater ate 50%: GRUDA no bicho (anda ate ficar colado) em vez de so confiar no chase
+            -- do cliente. 1 hit continua igual (so o chase).
+            local okP, apM = pcall(function() return TD.alvo:getPosition() end)
+            if TD.cfgTarget().modo ~= "1" and okP and apM and dist(player:getPosition(), apM) > 1 then
+                TD.irPara(apM)
+                TD.indoAoAlvo = true
+            elseif TD.indoAoAlvo then   -- colou: para o auto walk (nao fica tentando pisar no bicho)
+                TD.indoAoAlvo = false
+                TD.destinoAtual = nil
+                TD.caminho = nil
+                if player.stopAutoWalk then pcall(function() player:stopAutoWalk() end) end
+            end
+            return
+        end
         local ap = TD.alvo:getPosition()
         if dist(player:getPosition(), ap) > cfg.alcance then
             TD.irPara(ap)
