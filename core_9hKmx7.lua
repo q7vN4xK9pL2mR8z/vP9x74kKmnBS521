@@ -19,7 +19,7 @@ TaskDemon.TAREFAS = {
     thundergiant = {nome = "Demolisher Thundergiant",         titulo = "Thundergiant",         curto = "Thundergiant", meta = 1, dias = {dom = true}},
     dragon       = {nome = "Demolisher Dragon",               titulo = "Dragon (TESTE)",       curto = "Dragon",       meta = 50},
 }
-TaskDemon.ORDEM = {"infernal", "goshnar", "merlin", "angrybird", "bloodsugar", "emberwing", "thundergiant", "dragon"}
+TaskDemon.ORDEM = {"infernal", "goshnar", "merlin", "angrybird", "bloodsugar", "emberwing", "thundergiant"}
 TaskDemon.AGENDAVEIS = {"infernal", "goshnar", "merlin", "angrybird", "bloodsugar", "emberwing", "thundergiant"}
 TaskDemon.DIAS = {"dom", "seg", "ter", "qua", "qui", "sex", "sab"}
 
@@ -47,6 +47,12 @@ function TaskDemon.metaDe(k)
     return cfg.metas[k] or (TaskDemon.TAREFAS[k] and TaskDemon.TAREFAS[k].meta) or 50
 end
 cfg.tarefa = cfg.tarefa or "infernal"
+-- tarefa salva que saiu da lista (ex.: dragon de teste): volta pra primeira
+do
+    local naLista = false
+    for _, k in ipairs(TaskDemon.ORDEM) do if k == cfg.tarefa then naLista = true end end
+    if not naLista then cfg.tarefa = TaskDemon.ORDEM[1] end
+end
 cfg.prog = cfg.prog or {}
 cfg.progServidor = cfg.progServidor or {}
 cfg.progBase = cfg.progBase or {}
@@ -306,7 +312,7 @@ function TD.log(t)
 end
 -- versao do codigo: aparece no log ao carregar, pra confirmar que o vBot esta rodando o arquivo novo
 -- SUBIR a cada entrega (1.0, 1.1, 1.2 ...): aparece no titulo do painel "TASKS 1.0" e no log ao carregar
-TD.VERSAO = "3.6"
+TD.VERSAO = "3.7"
 TD.log("Task Demon versao " .. TD.VERSAO .. " carregado.")
 -- aviso dos perfis: so no terminal do cliente (o usuario nao quer isso no log do painel)
 if TaskDemon.avisoPerfis then print("[Task Demon] " .. TaskDemon.avisoPerfis) end
