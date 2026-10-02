@@ -317,7 +317,7 @@ function TD.log(t)
 end
 -- versao do codigo: aparece no log ao carregar, pra confirmar que o vBot esta rodando o arquivo novo
 -- SUBIR a cada entrega (1.0, 1.1, 1.2 ...): aparece no titulo do painel "TASKS 1.0" e no log ao carregar
-TD.VERSAO = "4.4"
+TD.VERSAO = "5.2"
 TD.log("Task Demon versao " .. TD.VERSAO .. " carregado.")
 -- aviso dos perfis: so no terminal do cliente (o usuario nao quer isso no log do painel)
 if TaskDemon.avisoPerfis then print("[Task Demon] " .. TaskDemon.avisoPerfis) end
@@ -791,9 +791,20 @@ TD.TP_EVENTO = {x = 32350, y = 32230, z = 7}
 -- entrada dos EVENTOS (todos usam o mesmo TP): 3 gotos, o ultimo pisa pro SUL em cima do TP.
 -- Saiu do lugar / foi empurrado / TP fechado: repete o ultimo goto ate entrar (TD.proximoWp).
 TD.EVENTO_ESPERA_TP_MIN = 8   -- comecou o evento e nao entrou no TP nesse tempo = TP fechou: encerra e volta
+-- v4.5 (rota do usuario): pisa no TP (goto 4), se nao entrou da a volta pelo leste e pisa de novo (goto 12);
+-- do goto 12 em diante o "forcar" (eventoRota) fica pisando no TP ate entrar.
 TD.ENTRADA_EVENTO = {
     {32346, 32227, 7, false, false},
     {32348, 32228, 7, false, false},
+    {32350, 32229, 7, false, false},
+    {32350, 32229, 7, false, "S"},
+    {32369, 32235, 7, false, false},
+    {32369, 32230, 7, false, false},
+    {32364, 32228, 7, false, false},
+    {32355, 32228, 7, false, false},
+    {32351, 32228, 7, false, false},
+    {32350, 32228, 7, false, false},
+    {32350, 32229, 7, false, false},
     {32350, 32229, 7, false, "S"},
 }
 function TD.esperandoTpEvento(w, lado)
@@ -2027,13 +2038,13 @@ end
 
 TD.ZOMBIE_VISAO_X = 18         -- tela afastada: sqm visiveis pros lados (tile que o cliente nao tem conta como desconhecido)
 TD.ZOMBIE_VISAO_Y = 14         -- tela afastada: sqm visiveis pra cima/baixo
-TD.ZOMBIE_SEM_PARADO = 4      -- zombie a essa distancia ou menos: proibido ficar parado (tem que fugir)
+TD.ZOMBIE_SEM_PARADO = 8      -- zombie a essa distancia ou menos: proibido ficar parado (4 -> 8: sim 120->141 / 156->176 de 200)
 TD.ZOMBIE_VOLTA = 1.3          -- voltar pro lado oposto so se for 30% melhor que a outra opcao (anti-samba)
 TD.ZOMBIE_TEIMA = 0.9          -- mantem a direcao anterior se a nota dela for >= 90% da melhor (anti-samba)
 TD.ZOMBIE_CAPTURA = 2          -- a 2 sqm o jogo ja conta como capturado
-TD.ZOMBIE_ALERTA = 10          -- comeca a planejar com zombie a essa distancia (era 6: ficava parado na borda ate encurralar)
+TD.ZOMBIE_ALERTA = 14          -- comeca a planejar com zombie a essa distancia (6 -> 10 -> 14: sim "zombies chegando de longe" 134 -> 159/200)
 TD.ZOMBIE_ESPACO_RAIO = 8      -- espaco livre: olha ate 8 sqm em cada uma das 8 direcoes
-TD.ZOMBIE_ESPACO_PESO = 2      -- quanto vale o espaco livre na nota (foge pro aberto, nao pra parede/borda)
+TD.ZOMBIE_ESPACO_PESO = 0      -- espaco livre na nota: DESLIGADO (0). Na arena real (minimapa) piorou: 182 -> 157/200
 TD.ZOMBIE_PROF = 16            -- passos simulados a frente
 TD.ZOMBIE_FEIXE = 40           -- sequencias guardadas por passo (mais = melhor e mais pesado; 60 -> 40 com a diagonal)
 TD.ZOMBIE_CUSTO_DIAG = 3       -- passo diagonal demora ~3x o reto (Tibia): na conta o zombie anda 3x mais nesse passo
@@ -2113,9 +2124,11 @@ function TD.decidirFugaZombie(ev, p, zsTela)
         if a.desconhecido then return true end
         return a.tipo ~= "parede" and a.tipo ~= "barreira"
     end
+    -- previsao do zombie: anda RETO (videos 2026-10-02: 95% dos passos dos zombies sao num eixo so; a diagonal
+    -- e cara pra eles tambem). Sim na arena real com grupos: 8 zombies 110 -> 141/200, 5 zombies 187 -> 200.
     local function passoZ(z, alvo, ocup)
         local melhor, md, mm = z, chebyshev(z, alvo), math.abs(z.x - alvo.x) + math.abs(z.y - alvo.y)
-        for _, d in ipairs(DELTAS) do
+        for _, d in ipairs(ORTO) do
             local q = {x = z.x + d[1], y = z.y + d[2], z = z.z}
             if not ocup[chaveXY(q.x, q.y)] and zombieAnda(q) then
                 local dq, mq = chebyshev(q, alvo), math.abs(q.x - alvo.x) + math.abs(q.y - alvo.y)
@@ -2156,7 +2169,8 @@ function TD.decidirFugaZombie(ev, p, zsTela)
                             local k = { chaveXY(q.x, q.y) }
                             for _, z in ipairs(z2) do k[#k + 1] = chaveXY(z.x, z.y) end
                             k = table.concat(k, ":")
-                            local nota = 5 * dmin + soma + TD.ZOMBIE_ESPACO_PESO * espaco(q)
+                            local nota = 5 * dmin + soma
+                            if TD.ZOMBIE_ESPACO_PESO > 0 then nota = nota + TD.ZOMBIE_ESPACO_PESO * espaco(q) end
                             local ant = novos[k]
                             if not ant or nota > ant.nota then
                                 local pr = e.pr
@@ -2721,11 +2735,24 @@ macro(50, TD.protegido("eventoRota", function()
     -- o goto "exato" ocupado deixava ele parado num sqm pra sempre.
     local ult = TD.ENTRADA_EVENTO[#TD.ENTRADA_EVENTO]
     local tp = TD.TP_EVENTO
-    local noUltimo = pAgora and pAgora.x == ult[1] and pAgora.y == ult[2] and pAgora.z == ult[3]
+    -- so no FIM da entrada (goto 12): no goto 4 (mesmo sqm) a rota pisa 1x e segue a volta pelo leste
+    local noUltimo = TD.wp >= #TD.ENTRADA_EVENTO and pAgora and pAgora.x == ult[1] and pAgora.y == ult[2] and pAgora.z == ult[3]
     local dx = pAgora and (tp.x - pAgora.x) or 0
     local dy = pAgora and (tp.y - pAgora.y) or 0
     local dTp = pAgora and pAgora.z == tp.z and math.max(math.abs(dx), math.abs(dy)) or 99
+    -- ate 2 sqm do TP: anda pro TP. Video 14-22-54: a 2 sqm o passo "na direcao do TP" caiu na ESCADA do lado
+    -- e ele ficou subindo/descendo. Agora: sqm que leva pra outro lugar fica proibido (aprende na 1a vez) e o
+    -- passo so vai pra sqm livre e nao proibido.
     local pertoTp = TD.wp >= #TD.ENTRADA_EVENTO and dTp >= 1 and dTp <= 2
+    -- passo forcado que levou pra outro andar/lugar sem ser o TP do evento (escada, buraco): nunca mais pisa ali
+    ev.proibido = ev.proibido or {}
+    if ev.passoForcado and pAntes and pAgora and not entrouTp and
+        (pAntes.z ~= pAgora.z or math.max(math.abs(pAntes.x - pAgora.x), math.abs(pAntes.y - pAgora.y)) > 1) then
+        local f = ev.passoForcado
+        ev.proibido[f.x .. "," .. f.y .. "," .. f.z] = true
+        TD.logEv("O sqm " .. f.x .. ", " .. f.y .. " leva pra outro lugar (escada?): nao piso mais nele.")
+    end
+    if pAntes and pAgora and not mesmaPos(pAntes, pAgora) then ev.passoForcado = nil end
     -- EM CIMA do TP e nao teleportou (pisou nele ainda fechado e ele abriu embaixo, ou foi empurrado pra cima):
     -- sai pra um sqm livre do lado (de preferencia a frente); no segundo seguinte o forcar abaixo pisa de novo.
     -- Antes: o sqm da frente ocupado deixava ele parado em cima do TP pra sempre.
@@ -2734,13 +2761,15 @@ macro(50, TD.protegido("eventoRota", function()
         local t = agoraMs()
         if t >= (ev.proxForca or 0) then
             ev.proxForca = t + 1000
-            for _, d in ipairs({"0,-1", "1,-1", "-1,-1", "1,0", "-1,0", "1,1", "-1,1", "0,1"}) do
+            -- so pros lados retos (frente primeiro): diagonal/tras podia ser escada
+            for _, d in ipairs({"0,-1", "1,0", "-1,0"}) do
                 local vx, vy = d:match("^(-?%d+),(-?%d+)$")
                 local viz = {x = pAgora.x + tonumber(vx), y = pAgora.y + tonumber(vy), z = pAgora.z}
-                if TD.analisarTile(viz).tipo == "livre" then
+                if not ev.proibido[viz.x .. "," .. viz.y .. "," .. viz.z] and TD.analisarTile(viz).tipo == "livre" then
                     TD.logEv("Em cima do TP sem entrar: saindo 1 sqm pra pisar de novo.")
                     if player.stopAutoWalk then pcall(function() player:stopAutoWalk() end) end
                     TD.passoProprioAte = t + 600
+                    ev.passoForcado = viz
                     g_game.walk(DIR_DELTA[d])
                     break
                 end
@@ -2757,13 +2786,29 @@ macro(50, TD.protegido("eventoRota", function()
             ev.forcadas = (ev.forcadas or 0) + 1
             local sx = dx > 0 and 1 or (dx < 0 and -1 or 0)
             local sy = dy > 0 and 1 or (dy < 0 and -1 or 0)
-            local dir = noUltimo and TD.LADOS.S or DIR_DELTA[sx .. "," .. sy]
+            local dir, destino = nil, nil
+            if noUltimo or dTp == 1 then
+                dir, destino = noUltimo and TD.LADOS.S or DIR_DELTA[sx .. "," .. sy], {x = tp.x, y = tp.y, z = tp.z}
+            else
+                -- 2 sqm: diagonal pro TP; se for proibido/ocupado, tenta so o x ou so o y
+                for _, o in ipairs({{sx, sy}, {sx, 0}, {0, sy}}) do
+                    if o[1] ~= 0 or o[2] ~= 0 then
+                        local q = {x = pAgora.x + o[1], y = pAgora.y + o[2], z = pAgora.z}
+                        if not ev.proibido[q.x .. "," .. q.y .. "," .. q.z] and TD.analisarTile(q).tipo == "livre" then
+                            dir, destino = DIR_DELTA[o[1] .. "," .. o[2]], q
+                            break
+                        end
+                    end
+                end
+            end
             if ev.forcadas % 10 == 1 then
                 TD.logEv("Forcando entrar no TP do evento (tentativa " .. ev.forcadas .. ", " .. dTp .. " sqm do TP).")
             end
             if dir ~= nil then
                 if player.stopAutoWalk then pcall(function() player:stopAutoWalk() end) end
                 TD.passoProprioAte = t + 600
+                -- pisar no TP (destino = TP) nao conta como "escada": o detector de entrada cuida disso
+                ev.passoForcado = (destino and not mesmaPos(destino, tp)) and destino or nil
                 g_game.walk(dir)
             end
         end
@@ -3031,10 +3076,28 @@ macro(50, TD.protegido("alvos", function()
                 TD.aproxMelhor = distAlvo
                 TD.aproximandoDesde = agora
             end
-            if TD.caminhoChecado[idAlvo] == nil then
-                TD.caminhoChecado[idAlvo] = calcularCaminho(player:getPosition(), alvo:getPosition(), false, 30) ~= nil
+            -- tem caminho? Vale chegar num sqm VIZINHO do bicho (bicho voador fica em cima de arvore/agua, sqm onde
+            -- eu nao piso: o caminho ate o sqm dele nunca existe). Sem caminho: confere de novo a cada 2s e so
+            -- desiste depois de 4s seguidos sem caminho (antes: 1 conta so, guardada pra sempre -> largava na hora).
+            local cc = TD.caminhoChecado[idAlvo]
+            if type(cc) ~= "table" then cc = nil end
+            if not cc or (not cc.ok and agora - cc.t >= 2) then
+                local pp, ap = player:getPosition(), alvo:getPosition()
+                local ok = calcularCaminho(pp, ap, false, 30) ~= nil
+                if not ok and TD.analisarTile then
+                    for _, d in ipairs(DELTAS) do
+                        local viz = {x = ap.x + d[1], y = ap.y + d[2], z = ap.z}
+                        if (mesmaPos(viz, pp) or TD.analisarTile(viz).tipo == "livre") and
+                            (mesmaPos(viz, pp) or calcularCaminho(pp, viz, false, 30) ~= nil) then
+                            ok = true
+                            break
+                        end
+                    end
+                end
+                cc = {ok = ok, t = agora, desde = (not ok) and ((cc and cc.desde) or agora) or nil}
+                TD.caminhoChecado[idAlvo] = cc
             end
-            local semCaminho = not TD.caminhoChecado[idAlvo]
+            local semCaminho = not cc.ok and agora - (cc.desde or agora) >= 4
             local limiteAprox = TD.cfgTarget().modo == "1" and TD.APROXIMAR_S or TD.APROXIMAR_MATAR_S
             if semCaminho or agora - (TD.aproximandoDesde or agora) >= limiteAprox then
                 TD.log("Largou o alvo: " .. (semCaminho and "sem caminho ate ele" or ("nao chegou perto em " .. limiteAprox .. "s")) ..
@@ -3118,7 +3181,7 @@ macro(50, TD.protegido("alvos", function()
         if n > 30 then break end
         local id = item.c:getId()
         local texto = (id == idAlvo) and (">> ALVO " .. (base + n) .. " <<") or ("ALVO " .. (base + n))
-        local cor = (id == idAlvo) and "#FF3030" or "#FFD700"
+        local cor = "#FFFFFF"   -- branco: mais visivel (era vermelho no alvo atual e dourado nos outros)
         pcall(function() item.c:setText(texto, cor) end)
         marcados[id] = true
         table.insert(novos, item.c)
@@ -3190,7 +3253,14 @@ macro(50, TD.protegido("andar", function()
             -- do cliente. 1 hit continua igual (so o chase).
             local okP, apM = pcall(function() return TD.alvo:getPosition() end)
             if TD.cfgTarget().modo ~= "1" and okP and apM and dist(player:getPosition(), apM) > 1 then
-                TD.irPara(apM)
+                -- vai pro sqm LIVRE colado no bicho mais perto de mim (bicho voador pode estar em arvore/agua)
+                local pM, destM, melhorD = player:getPosition(), apM, 999
+                for _, d in ipairs(DELTAS) do
+                    local viz = {x = apM.x + d[1], y = apM.y + d[2], z = apM.z}
+                    local dv = dist(pM, viz)
+                    if dv < melhorD and TD.analisarTile(viz).tipo == "livre" then destM, melhorD = viz, dv end
+                end
+                TD.irPara(destM)
                 TD.indoAoAlvo = true
             elseif TD.indoAoAlvo then   -- colou: para o auto walk (nao fica tentando pisar no bicho)
                 TD.indoAoAlvo = false
