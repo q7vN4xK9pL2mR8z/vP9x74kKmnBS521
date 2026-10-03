@@ -317,7 +317,7 @@ function TD.log(t)
 end
 -- versao do codigo: aparece no log ao carregar, pra confirmar que o vBot esta rodando o arquivo novo
 -- SUBIR a cada entrega (1.0, 1.1, 1.2 ...): aparece no titulo do painel "TASKS 1.0" e no log ao carregar
-TD.VERSAO = "5.2"
+TD.VERSAO = "5.3"
 TD.log("Task Demon versao " .. TD.VERSAO .. " carregado.")
 -- aviso dos perfis: so no terminal do cliente (o usuario nao quer isso no log do painel)
 if TaskDemon.avisoPerfis then print("[Task Demon] " .. TaskDemon.avisoPerfis) end
@@ -2044,7 +2044,7 @@ TD.ZOMBIE_TEIMA = 0.9          -- mantem a direcao anterior se a nota dela for >
 TD.ZOMBIE_CAPTURA = 2          -- a 2 sqm o jogo ja conta como capturado
 TD.ZOMBIE_ALERTA = 14          -- comeca a planejar com zombie a essa distancia (6 -> 10 -> 14: sim "zombies chegando de longe" 134 -> 159/200)
 TD.ZOMBIE_ESPACO_RAIO = 8      -- espaco livre: olha ate 8 sqm em cada uma das 8 direcoes
-TD.ZOMBIE_ESPACO_PESO = 0      -- espaco livre na nota: DESLIGADO (0). Na arena real (minimapa) piorou: 182 -> 157/200
+TD.ZOMBIE_ESPACO_PESO = 2      -- espaco livre na nota (anti-beco). 5.3: sim arena real + 15 players, 72 jogos: 208 -> 237/270s, ganhou 44 -> 54
 TD.ZOMBIE_PROF = 16            -- passos simulados a frente
 TD.ZOMBIE_FEIXE = 40           -- sequencias guardadas por passo (mais = melhor e mais pesado; 60 -> 40 com a diagonal)
 TD.ZOMBIE_CUSTO_DIAG = 3       -- passo diagonal demora ~3x o reto (Tibia): na conta o zombie anda 3x mais nesse passo
