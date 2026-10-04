@@ -317,7 +317,7 @@ function TD.log(t)
 end
 -- versao do codigo: aparece no log ao carregar, pra confirmar que o vBot esta rodando o arquivo novo
 -- SUBIR a cada entrega (1.0, 1.1, 1.2 ...): aparece no titulo do painel "TASKS 1.0" e no log ao carregar
-TD.VERSAO = "5.5"
+TD.VERSAO = "5.6"
 TD.log("Task Demon versao " .. TD.VERSAO .. " carregado.")
 -- aviso dos perfis: so no terminal do cliente (o usuario nao quer isso no log do painel)
 if TaskDemon.avisoPerfis then print("[Task Demon] " .. TaskDemon.avisoPerfis) end
@@ -398,6 +398,15 @@ function TD.tarefaAtual() return TD.TAREFAS[cfg.tarefa] or TD.TAREFAS.infernal e
 local function agoraMs()
     if type(now) == "number" then return now end
     return os.time() * 1000
+end
+
+-- relogio que anda DENTRO de um calculo (o "now" do vBot so muda entre ciclos); nil se nao tiver nenhum
+local function relogioMs()
+    local ok, v = pcall(function() return g_clock.millis() end)
+    if ok and type(v) == "number" then return v end
+    ok, v = pcall(function() return os.clock() * 1000 end)
+    if ok and type(v) == "number" then return v end
+    return nil
 end
 
 local function mesmaPos(a, b)
@@ -645,6 +654,10 @@ function TD.irParaCaminho(destino)
     local p = player:getPosition()
     if not p or not destino then return end
     local t = agoraMs()
+    if TD.caminho and TD.proximoBloqueado and TD.proximoBloqueado(p, destino) then
+        if player.stopAutoWalk then pcall(function() player:stopAutoWalk() end) end
+        TD.caminho, TD.caminhoCalc = nil, 0
+    end
     local mudou = not mesmaPos(destino, TD.destinoAtual)
     local precisa = mudou or not TD.caminho
         or (not andando() and t - (TD.caminhoCalc or 0) > 400)
@@ -662,6 +675,10 @@ function TD.irParaCaminho(destino)
             TD.caminho = TD.caminhoReto(p, destino) or calcularCaminho(p, destino, true, busca) or calcularCaminho(p, destino, false, busca)
         end
         if TD.caminho then TD.caminho = TD.endireitar(p, TD.caminho) end
+        if TD.caminho and TD.caminhoPassaTravado and TD.caminhoPassaTravado(p, TD.caminho) then
+            TD.caminho = TD.desvioLateral(p, destino)
+        end
+        TD.caminhoDe = {x = p.x, y = p.y, z = p.z}
         TD.caminhoIdx = 1
         TD.caminhoAuto = false
         if not TD.caminho then
@@ -978,6 +995,7 @@ function TD.andarRota()
             TD.desvioAte = 0
         elseif parado >= TD.MS_DESVIO and t >= TD.desvioAte then
             TD.desvioAte = t + 2000
+            TD.marcarTravado(p)
             TD.caminho = nil
         end
     else
@@ -1374,6 +1392,11 @@ TD.BARREIRAS = {
     [2130] = {nome = "GRAV", tempo = 45},
 }
 TD.barreirasVistas = {}
+-- v5.6: sqm que recusou o passo ("Sorry, not possible": MW que o client nao reconhece, etc). Vira barreira por
+-- TD.TRAVADO_SEG e o caminho desvia dele (antes o desvio recalculava o MESMO caminho e empurrava de novo).
+TD.travados = {}
+TD.TRAVADO_SEG = 20        -- sqm vazio que recusou o passo (MW, parede invisivel...): MW dura ~20s
+TD.TRAVADO_GENTE_SEG = 3   -- player/bicho parado no caminho: desvia, mas logo pode passar de novo (eles andam)
 TD.inimigos = {}
 TD.ultimoBico = 0
 TD.ultimaMW = 0
@@ -1416,19 +1439,25 @@ end
 
 TD.cacheTiles = nil
 
+-- v5.6: chave numerica no cache (a de texto criava milhares de strings por decisao do zombie = travadinha)
+local function chaveNum(p) return (p.z * 100000 + p.x) * 100000 + p.y end
+
 function TD.analisarTile(pos)
     local cache = TD.cacheTiles
     if cache then
-        local r = cache[chavePos(pos)]
+        local k = chaveNum(pos)
+        local r = cache[k]
         if r then return r end
         r = TD.analisarTileReal(pos)
-        cache[chavePos(pos)] = r
+        cache[k] = r
         return r
     end
     return TD.analisarTileReal(pos)
 end
 
 function TD.analisarTileReal(pos)
+    local trav = TD.travados[chavePos(pos)]
+    if trav and trav > os.time() then return {tipo = "barreira", nome = "travado", resta = trav - os.time()} end
     local tile = g_map.getTile(pos)
     if not tile then return {tipo = "parede", desconhecido = true} end
     for _, it in ipairs(tile:getItems() or {}) do
@@ -1458,7 +1487,80 @@ macro(1000, function()
     for k, t in pairs(TD.barreirasVistas) do
         if agora - t > 60 then TD.barreirasVistas[k] = nil end
     end
+    for k, t in pairs(TD.travados) do
+        if t <= agora then TD.travados[k] = nil end
+    end
 end)
+
+-- proximo sqm do caminho atual a partir de p (o que ele esta tentando pisar)
+function TD.proximoSqmCaminho(p)
+    local q = TD.caminhoDe
+    if not TD.caminho or not q or q.z ~= p.z then return nil end
+    for _, d in ipairs(TD.caminho) do
+        local v = VETOR[d]
+        if not v then return nil end
+        local n = {x = q.x + v[1], y = q.y + v[2], z = q.z}
+        if q.x == p.x and q.y == p.y then return n end
+        q = n
+    end
+    return nil
+end
+
+-- parado tentando andar: marca o sqm da frente como travado. MW/vazio = 20s; player/bicho = 3s (ele anda).
+function TD.marcarTravado(p)
+    local n = TD.proximoSqmCaminho(p)
+    if n then TD.travarSqm(n) end
+end
+
+function TD.travarSqm(n)
+    local k = chavePos(n)
+    if TD.travados[k] then return end
+    local info = TD.analisarTileReal(n)
+    local gente = info.tipo == "player" or info.tipo == "monstro" or info.tipo == "npc"
+    local seg = gente and TD.TRAVADO_GENTE_SEG or TD.TRAVADO_SEG
+    TD.travados[k] = os.time() + seg
+    local quem = gente and ((info.tipo == "monstro" and "bicho" or "player") ..
+        (info.criatura and (" " .. info.criatura:getName()) or "")) or "MW?"
+    TD.log("Sqm " .. n.x .. ", " .. n.y .. " bloqueado (" .. quem .. "): desviando por " .. seg .. "s.")
+end
+
+-- v5.6: olha o PROXIMO sqm do caminho a cada ciclo (50 ms): player, bicho, MW ou parede la = trava e recalcula
+-- na hora, sem esperar 1,2 s parado. O destino em si nao conta (goto ocupado o andarRota ja pula).
+function TD.proximoBloqueado(p, destino)
+    local n = TD.proximoSqmCaminho(p)
+    if not n or mesmaPos(n, destino) then return false end
+    local info = TD.analisarTileReal(n)
+    if info.tipo == "livre" or info.desconhecido then return false end
+    TD.travarSqm(n)
+    return true
+end
+
+-- o caminho passa por sqm travado nos primeiros passos?
+function TD.caminhoPassaTravado(p, dirs)
+    local q = {x = p.x, y = p.y, z = p.z}
+    for i = 1, math.min(#dirs, 6) do
+        local v = VETOR[dirs[i]]
+        if not v then return false end
+        q = {x = q.x + v[1], y = q.y + v[2], z = q.z}
+        local trav = TD.travados[chavePos(q)]
+        if trav and trav > os.time() then return true end
+    end
+    return false
+end
+
+-- 1 passo pro lado: sqm vizinho livre que mais aproxima do destino (sai de perto do travado)
+function TD.desvioLateral(p, destino)
+    local melhor, md = nil, 999
+    for delta, dir in pairs(DIR_DELTA) do
+        local vx, vy = delta:match("^(-?%d+),(-?%d+)$")
+        local n = {x = p.x + tonumber(vx), y = p.y + tonumber(vy), z = p.z}
+        if TD.analisarTile(n).tipo == "livre" then
+            local d = math.max(math.abs(destino.x - n.x), math.abs(destino.y - n.y))
+            if d < md then melhor, md = dir, d end
+        end
+    end
+    return melhor and {melhor} or nil
+end
 
 function TD.gotoCaveBot()
     local ok, pos = pcall(function()
@@ -2229,13 +2331,19 @@ function TD.decidirFugaZombie(ev, p, zsTela)
                             k = table.concat(k, ":")
                             local nota = 5 * dmin + soma
                             if TD.ZOMBIE_ESPACO_PESO > 0 then nota = nota + TD.ZOMBIE_ESPACO_PESO * espaco(q) end
-                            local ant = novos[k]
+                            -- novos[k] = posicao na lista (antes procurava o estado antigo na lista inteira a cada troca)
+                            local ai = novos[k]
+                            local ant = ai and lista[ai]
                             if not ant or nota > ant.nota then
                                 local pr = e.pr
                                 if t == 1 then pr = d[3] end
                                 local s = {eu = q, zs = z2, pr = pr, acc = a, nota = nota}
-                                if not ant then table.insert(lista, s) else for i, x in ipairs(lista) do if x == ant then lista[i] = s end end end
-                                novos[k] = s
+                                if ai then
+                                    lista[ai] = s
+                                else
+                                    table.insert(lista, s)
+                                    novos[k] = #lista
+                                end
                             end
                         end
                     end
@@ -2310,8 +2418,14 @@ function TD.fugirZombies(ev, zs)
     if andando() or t < (ev.proxPasso or 0) then return end
     ev.proxPasso = t + 100
     TD.cacheTiles = {}
+    local t0 = relogioMs()
     local ok, dir, motivo = pcall(TD.decidirFugaZombie, ev, p, zs)
     TD.cacheTiles = nil
+    -- v5.6: quanto o calculo da fuga demorou (o client nao desenha enquanto calcula): aparece no painel
+    if t0 then
+        ev.calcMs = relogioMs() - t0
+        if ev.calcMs > (ev.calcMax or 0) then ev.calcMax = ev.calcMs end
+    end
     if not ok then
         ev.fugaEstado = "Erro: " .. tostring(dir)
         return
@@ -2331,6 +2445,7 @@ TD.SNOW = {
     paradoMs = 500,       -- player parado ha pelo menos isso = alvo (em movimento e ignorado)
     intervalo = 1000,     -- ms entre tiros (ajustar no teste)
     recarregarCom = 0,    -- vai no gerador quando as bolas chegarem nisso
+    telaSegura = {7, 5},  -- v5.6: sqm ate essa distancia (x, y) com certeza aparece na tela (pra esquecer lembrado)
 }
 local DIR4 = {{0, -1, North or 0}, {1, 0, East or 1}, {0, 1, South or 2}, {-1, 0, West or 3}}
 
@@ -2342,6 +2457,56 @@ end
 -- ZOMBIE: quadrado de entrada da arena (4 gotos 18965,18943 / 18964,18951 / 18981,18952 / 18982,18945, z7).
 -- Pisou aqui = entrou no Zombie: a rota do painel desliga e so a fuga anda.
 TD.ZOMBIE_ENTRADA = {x1 = 18964, x2 = 18982, y1 = 18943, y2 = 18952, z = 7}
+-- v5.6: assim que entra, sai do bolo de player (todo mundo cai empilhado): vai pra 1 desses sqm, escolhido
+-- aleatorio entre os livres (ocupado = tenta outro). Uma vez so: chegou, deu o tempo ou apareceu zombie = desliga
+-- de vez (deixar ativo brigava com a fuga).
+TD.ZOMBIE_SAIDAS = {
+    {18976, 18950, 7}, {18976, 18948, 7}, {18975, 18951, 7}, {18977, 18951, 7},
+    {18974, 18950, 7}, {18973, 18951, 7}, {18979, 18950, 7},
+}
+TD.ZOMBIE_SAIDA_MAX_MS = 8000   -- nao conseguiu chegar nesse tempo: fica onde esta
+
+function TD.escolherSaidaZombie(ev)
+    ev.zSaidaTentadas = ev.zSaidaTentadas or {}
+    local livres = {}
+    for _, w in ipairs(TD.ZOMBIE_SAIDAS) do
+        local q = {x = w[1], y = w[2], z = w[3]}
+        local k = q.x .. "," .. q.y
+        if not ev.zSaidaTentadas[k] and TD.analisarTile(q).tipo == "livre" then table.insert(livres, q) end
+    end
+    if #livres == 0 then return nil end
+    local ok, i = pcall(math.random, #livres)   -- sem math.random: pega o primeiro livre
+    return livres[ok and i or 1]
+end
+
+-- true = ainda saindo do bolo (o ciclo do zombie para aqui)
+function TD.sairDoBoloZombie(ev, p, t)
+    if ev.zSaida == false then return false end
+    ev.zSaidaAte = ev.zSaidaAte or t + TD.ZOMBIE_SAIDA_MAX_MS
+    if t > ev.zSaidaAte then ev.zSaida = false return false end
+    if not ev.zSaida then
+        ev.zSaida = TD.escolherSaidaZombie(ev)
+        if not ev.zSaida then ev.zSaida = false return false end
+        TD.logEv("Zombie: saindo do bolo para " .. ev.zSaida.x .. ", " .. ev.zSaida.y .. ".")
+    end
+    if mesmaPos(p, ev.zSaida) then
+        ev.zSaida = false
+        TD.caminho, TD.destinoAtual = nil, nil
+        if player.stopAutoWalk then pcall(function() player:stopAutoWalk() end) end
+        TD.logEv("Zombie: saiu do bolo. Parado esperando.")
+        return false
+    end
+    if TD.analisarTile(ev.zSaida).tipo ~= "livre" then
+        -- ocupou no caminho: marca e escolhe outro no proximo ciclo
+        ev.zSaidaTentadas[ev.zSaida.x .. "," .. ev.zSaida.y] = true
+        ev.zSaida = nil
+        return true
+    end
+    ev.fugaEstado = "Saindo do bolo de player"
+    TD.irPara(ev.zSaida)
+    return true
+end
+
 function TD.naEntradaZombie(p)
     local s = TD.ZOMBIE_ENTRADA
     return p and p.z == s.z and p.x >= s.x1 and p.x <= s.x2 and p.y >= s.y1 and p.y <= s.y2
@@ -2370,8 +2535,12 @@ local function direcaoTiro(p, alvo)
 end
 
 -- so players PARADOS: em movimento e dificil de acertar, entao ignora
+-- v5.6: quase todo mundo fica AFK. ev.snowMem lembra onde vi player PARADO (mesmo depois de sair da tela):
+-- sem alvo na tela, vai nele em vez de andar a rota (sim testes/snow: 27/48 -> 42/48 vitorias).
 function TD.playersSnow(ev, p, t)
     ev.snowPos = ev.snowPos or {}
+    ev.snowMem = ev.snowMem or {}
+    local vistos = {}
     local lista, total = {}, 0
     for _, spec in ipairs(getSpectators()) do
         local okP, ehP = pcall(function() return spec:isPlayer() end)
@@ -2386,10 +2555,20 @@ function TD.playersSnow(ev, p, t)
                     ev.snowPos[id] = r
                 end
                 local okW, anda = pcall(function() return spec:isWalking() end)
-                if not (okW and anda) and t - r.desde >= TD.SNOW.paradoMs and dist(p, sp) <= TD.SNOW.visao then
+                local parado = not (okW and anda) and t - r.desde >= TD.SNOW.paradoMs
+                vistos[id] = sp
+                if parado then ev.snowMem[id] = r.pos elseif okW and anda then ev.snowMem[id] = nil end
+                if parado and dist(p, sp) <= TD.SNOW.visao then
                     table.insert(lista, {c = spec, pos = sp, d = dist(p, sp)})
                 end
             end
+        end
+    end
+    -- lembrado num sqm que esta na tela e ele nao esta mais la (levou bola/saiu): esquece
+    local tx, ty = TD.SNOW.telaSegura[1], TD.SNOW.telaSegura[2]
+    for id, q in pairs(ev.snowMem) do
+        if q.z ~= p.z or (math.abs(q.x - p.x) <= tx and math.abs(q.y - p.y) <= ty and not mesmaPos(vistos[id], q)) then
+            ev.snowMem[id] = nil
         end
     end
     ev.nPlayers, ev.nParados = total, #lista
@@ -2397,26 +2576,26 @@ function TD.playersSnow(ev, p, t)
     return lista
 end
 
+-- player parado lembrado mais perto (fora da tela)
+function TD.lembradoSnow(ev, p)
+    local melhor, md = nil, 999
+    for _, q in pairs(ev.snowMem or {}) do
+        local d = dist(p, q)
+        if d < md then melhor, md = q, d end
+    end
+    return melhor
+end
+
 local function falar(msg)
     if say and pcall(function() say(msg) end) then return end
     pcall(function() g_game.talk(msg) end)
 end
 
-local function passoPara(ev, p, destino, t, alcance)
-    if andando() or t < (ev.proxPasso or 0) then return end
-    ev.proxPasso = t + 100
-    local dirs = calcularCaminho(p, destino, true, alcance or 20)
-    if dirs then
-        TD.passoProprioAte = t + 600
-        g_game.walk(dirs[1])
-    end
-end
-
 -- gerador (posicoes dadas pelo usuario): fica em pe no sqm da frente e da "use" no gerador.
--- Sem bolas: vai direto pra la, usa ate 2x (10 bolas por uso) e volta pro jogo.
+-- Sem bolas: vai direto pra la, usa ate TD.SNOW.usosGerador vezes (10 bolas por uso) e volta pro jogo.
 TD.SNOW.geradorPe = {x = 19004, y = 19243, z = 7}
 TD.SNOW.gerador = {x = 19004, y = 19242, z = 7}
-TD.SNOW.usosGerador = 2
+TD.SNOW.usosGerador = 2   -- sim testes/snow (v5.6): 4 por ida perdeu ~4 pontos (sobra bola no fim)
 
 -- sai da rota PRINCIPAL pra cacar/ir no gerador: para o autoWalk do goto na hora (sem esperar chegar nele)
 local function pausarRotaSnow(ev)
@@ -2438,7 +2617,7 @@ function TD.recarregarSnow(ev, p, t)
             local q = {x = g.x + d[1], y = g.y + d[2], z = g.z}
             if TD.analisarTile(q).tipo == "livre" and dist(p, q) < md then alvo, md = q, dist(p, q) end
         end
-        return passoPara(ev, p, alvo, t, 40)
+        return TD.irPara(alvo)   -- v5.6: autoWalk direto pro gerador (antes 1 passo por vez)
     end
     if t < (ev.proxUso or 0) then return end
     ev.usos = ev.usos or 0
@@ -2475,7 +2654,12 @@ function TD.passoSnow(ev, p, t)
             ev.alvoSnow = TD.nomeLimpo(a.c:getName())
             ev.snowEstado = "Atirando"
             pausarRotaSnow(ev)
-            if andando() then return end
+            if andando() then
+                -- v5.6: andando pro proximo e alinhou com alguem no caminho: para e atira (antes passava direto)
+                if player.stopAutoWalk then pcall(function() player:stopAutoWalk() end) end
+                TD.caminho, TD.destinoAtual = nil, nil
+                return
+            end
             local okD, olhando = pcall(function() return player:getDirection() end)
             if okD and olhando ~= dir then
                 if t >= (ev.proxVirar or 0) then
@@ -2507,13 +2691,20 @@ function TD.passoSnow(ev, p, t)
     end
     ev.alvoSnow = nil
     if not melhor then
+        local lembrado = TD.lembradoSnow(ev, p)
+        if lembrado then
+            ev.snowEstado = "Indo no player parado que vi"
+            pausarRotaSnow(ev)
+            return TD.irPara(lembrado)
+        end
         -- ninguem pra cacar perto: segue a rota PRINCIPAL do painel
         ev.snowEstado = "Rota (" .. ((ev.nPlayers or 0) == 0 and "sem players" or "ninguem parado a " .. TD.SNOW.visao .. " sqm") .. ")"
         return "rota"
     end
     ev.snowEstado = "Alinhando com player"
     pausarRotaSnow(ev)
-    passoPara(ev, p, melhor, t)
+    -- v5.6: autoWalk direto (andar 1 passo e esperar terminar pra calcular o proximo deixava ele lento)
+    TD.irPara(melhor)
 end
 
 function TD.cicloSnow(ev)
@@ -2813,7 +3004,17 @@ macro(50, TD.protegido("eventoRota", function()
         if not ev.naArena then return TD.andarRota() end
         local zs = p and TD.zombiesNaTela(p) or {}
         ev.zombies = #zs
-        if ev.fase ~= "FUGA" and #zs > 0 then ev.fase = "FUGA" end
+        if ev.fase ~= "FUGA" and #zs > 0 then
+            ev.fase = "FUGA"
+            if ev.zSaida then
+                -- apareceu zombie no meio da saida do bolo: larga a saida, a fuga assume
+                ev.zSaida = false
+                TD.caminho, TD.destinoAtual = nil, nil
+                if player.stopAutoWalk then pcall(function() player:stopAutoWalk() end) end
+            end
+            ev.zSaida = false
+        end
+        if ev.fase ~= "FUGA" and p and TD.sairDoBoloZombie(ev, p, agoraMs()) then return end
         if ev.fase == "FUGA" then return TD.fugirZombies(ev, zs) end
         return
     elseif ev.tipo == "snowball" then
@@ -5414,7 +5615,8 @@ macro(500, function()
             " | " .. (ev.snowEstado or "-") .. (ev.alvoSnow and (" " .. ev.alvoSnow) or ""))
     elseif ev and ev.tipo == "zombie" then
         ui.evBoss:setText((ev.restam and ("Restam " .. ev.restam .. " | ") or "") .. "Zombies: " .. (ev.zombies or 0) .. " na tela | perto: " ..
-            ((ev.pertoZombie or 99) < 99 and (ev.pertoZombie .. " sqm") or "-") .. " | " .. (ev.fugaEstado or "-"))
+            ((ev.pertoZombie or 99) < 99 and (ev.pertoZombie .. " sqm") or "-") .. " | " .. (ev.fugaEstado or "-") ..
+            (ev.calcMs and (" | calc " .. math.floor(ev.calcMs) .. "ms (max " .. math.floor(ev.calcMax or 0) .. ")") or ""))
     else
         ui.evBoss:setText("Boss: " .. (ev and ev.bossNome and (ev.bossIdx .. "/5 " .. ev.bossNome) or "-"))
     end
