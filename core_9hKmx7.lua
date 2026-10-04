@@ -317,7 +317,7 @@ function TD.log(t)
 end
 -- versao do codigo: aparece no log ao carregar, pra confirmar que o vBot esta rodando o arquivo novo
 -- SUBIR a cada entrega (1.0, 1.1, 1.2 ...): aparece no titulo do painel "TASKS 1.0" e no log ao carregar
-TD.VERSAO = "5.3"
+TD.VERSAO = "5.5"
 TD.log("Task Demon versao " .. TD.VERSAO .. " carregado.")
 -- aviso dos perfis: so no terminal do cliente (o usuario nao quer isso no log do painel)
 if TaskDemon.avisoPerfis then print("[Task Demon] " .. TaskDemon.avisoPerfis) end
@@ -807,6 +807,33 @@ TD.ENTRADA_EVENTO = {
     {32350, 32229, 7, false, false},
     {32350, 32229, 7, false, "S"},
 }
+-- v5.5: escada do lado do TP leva pro andar 8 (area abaixo). Caiu ali: vai pro pe da escada e sobe pro NORTH.
+TD.BURACO_EVENTO = {x1 = 32343, x2 = 32352, y1 = 32226, y2 = 32240, z = 8}
+TD.SUBIDA_BURACO_EVENTO = {x = 32347, y = 32232, z = 8}
+-- v5.5: pisar no sqm do TP SEM portal joga o char aqui (corredor a leste). E o "vai e volta" da entrada.
+TD.VOLTA_TP_EVENTO = {x1 = 32365, x2 = 32374, y1 = 32228, y2 = 32243, z = 7}
+function TD.naVoltaTpEvento(p)
+    local b = TD.VOLTA_TP_EVENTO
+    return p and p.z == b.z and p.x >= b.x1 and p.x <= b.x2 and p.y >= b.y1 and p.y <= b.y2
+end
+function TD.noBuracoEvento(p)
+    local b = TD.BURACO_EVENTO
+    return p and p.z == b.z and p.x >= b.x1 and p.x <= b.x2 and p.y >= b.y1 and p.y <= b.y2
+end
+-- v5.5: 10s sem pisar no sqm do TP do evento, com ou sem portal (preso na multidao, caiu na escada, empurrado...): "!tp thais"
+-- (cai perto do TP) e a rota segue de onde cair. Repete a cada 10s. Entrou no TP (ev.dentro) = para.
+TD.TP_THAIS_SEG = 10
+
+function TD.portalEventoAberto()
+    local tile = g_map and g_map.getTile(TD.TP_EVENTO)
+    if not tile then return false end
+    local ok, itens = pcall(function() return tile:getItems() end)
+    for _, it in ipairs(ok and itens or {}) do
+        if it:getId() == 1949 then return true end
+    end
+    return false
+end
+
 function TD.esperandoTpEvento(w, lado)
     local tp = TD.TP_EVENTO
     local alvo = {x = w[1], y = w[2], z = w[3]}
@@ -1861,19 +1888,50 @@ TD.ISLAND = {
     tp = 1949,
 }
 
+function TD.salaIslandValida(s)
+    local c = TD.ISLAND.sala
+    return type(s) == "table" and s.z == c.z and math.abs(s.x1 - c.x1) <= 30 and math.abs(s.y1 - c.y1) <= 30
+end
+
 -- sala cadastrada OU a aprendida (onde o TP do evento te deixou da ultima vez: cfg.islandSala)
 function TD.naSalaIsland(p)
     if not p then return false end
     -- perto do TP do evento NUNCA e a sala (uma sala aprendida errada fazia ele achar que ja tinha entrado)
     if dist(p, TD.TP_EVENTO) <= 20 then return false end
-    for _, s in ipairs({TD.ISLAND.sala, cfg.islandSala}) do
+    -- v5.5: sala aprendida longe da cadastrada = aprendeu errado (ex.: templo depois do "!tp thais"): ignora
+    local aprendida = TD.salaIslandValida(cfg.islandSala) and cfg.islandSala or nil
+    for _, s in ipairs({TD.ISLAND.sala, aprendida}) do
         if s and p.z == s.z and p.x >= s.x1 and p.x <= s.x2 and p.y >= s.y1 and p.y <= s.y2 then return true end
     end
     return false
 end
 
+-- Seguranca (5.4): a agenda ja chamou (evento/task) mas o CaveBot passou no checkin DE NOVO = o char nao chegou
+-- na label (travou no caminho e a cave voltou a rodar). Antes ele ignorava ate o horario acabar; agora manda
+-- pra label de novo, ate 3 vezes por chamada (sem chegadaDP na label nao fica em loop pra sempre).
+TD.reenvio = {chave = nil, n = 0, t = 0}
+local function reenviarLabel(k, logar)
+    local ag = cfg.agenda[k]
+    local j = TD.janelaAgora(k)
+    if not ag or ag.label == "" or not j then return nil end
+    local chave = os.date("%Y-%m-%d") .. "|" .. k .. "|" .. j.txt   -- zera a cada horario da agenda
+    if TD.reenvio.chave ~= chave then TD.reenvio = {chave = chave, n = 0, t = 0} end
+    -- 10 s entre reenvios: o checkin repetido logo em seguida nao gasta as 3 tentativas de uma vez
+    if TD.reenvio.n >= 3 or os.time() - TD.reenvio.t < 10 then return nil end
+    TD.reenvio.n, TD.reenvio.t = TD.reenvio.n + 1, os.time()
+    logar("Passou no checkin sem chegar na label '" .. ag.label .. "' (travou?). Indo de novo (" .. TD.reenvio.n .. "/3).")
+    if CaveBot.gotoLabel(ag.label) == false then return nil end
+    return "retry"
+end
+
+TD.reenviarLabel = reenviarLabel
+
 function TaskDemon.checkinEvento()
     if TD.evRun or TD.ativo then return true end
+    if TD.eventoChamado then
+        local r = reenviarLabel(TD.eventoChamado, TD.logEv)
+        if r then return r end
+    end
     local hoje = os.date("%Y-%m-%d")
     for _, k in ipairs(TD.ORDEM_EVENTOS) do
         local j = TD.EVENTOS[k].pronto and TD.janelaAgora(k)
@@ -2656,14 +2714,28 @@ macro(50, TD.protegido("eventoRota", function()
     local entrouTp = pAntes and pAgora and dist(pAntes, TD.TP_EVENTO) <= 2
         and (pAntes.z ~= pAgora.z or math.max(math.abs(pAntes.x - pAgora.x), math.abs(pAntes.y - pAgora.y)) > 8)
         and dist(pAgora, TD.TP_EVENTO) > 20   -- caiu longe do TP de verdade (nao foi so empurrado)
+        and not TD.noBuracoEvento(pAgora)     -- v5.5: cair na escada (andar 8) NAO e entrar no TP
+        and agoraMs() >= (ev.tpThaisAte or 0)  -- v5.5: o pulo do "!tp thais" NAO e entrar no TP
+        and ev.portalVisto                     -- v5.5: o portal (1949) estava no sqm; sem ele o sqm leva pro templo
+        and not TD.naVoltaTpEvento(pAgora)     -- v5.5: o sqm sem portal joga no corredor: NAO e entrar no TP
+    -- v5.5: guarda se o portal do evento esta aberto (so da pra ver de perto)
+    if pAgora and dist(pAgora, TD.TP_EVENTO) <= 2 then ev.portalVisto = TD.portalEventoAberto() end
+    -- o 1o pulo depois do "!tp thais" foi ele: libera a deteccao pro TP de verdade
+    if ev.tpThaisAte and pAntes and pAgora and (pAntes.z ~= pAgora.z
+        or math.max(math.abs(pAntes.x - pAgora.x), math.abs(pAntes.y - pAgora.y)) > 8) then
+        ev.tpThaisAte = nil
+    end
     if entrouTp and not ev.dentro then
         ev.dentro = true
         TD.logEv("Entrou no TP do evento (" .. pAgora.x .. ", " .. pAgora.y .. ", " .. pAgora.z .. ").")
     end
     if ev.tipo == "island" and pAgora then
         if entrouTp then
-            cfg.islandSala = {x1 = pAgora.x - 8, x2 = pAgora.x + 8, y1 = pAgora.y - 6, y2 = pAgora.y + 6, z = pAgora.z}
-            TD.logEv("Sala do Island aprendida.")
+            local sala = {x1 = pAgora.x - 8, x2 = pAgora.x + 8, y1 = pAgora.y - 6, y2 = pAgora.y + 6, z = pAgora.z}
+            if TD.salaIslandValida(sala) then
+                cfg.islandSala = sala
+                TD.logEv("Sala do Island aprendida.")
+            end
         end
         if entrouTp or TD.naSalaIsland(pAgora) then
             -- os gotos trouxeram ate a sala: a automacao do Island assume daqui
@@ -2681,6 +2753,42 @@ macro(50, TD.protegido("eventoRota", function()
     if not ev.dentro and os.time() - ev.inicio > TD.EVENTO_ESPERA_TP_MIN * 60 then
         return TD.terminarEvento("nao conseguiu entrar no TP em " .. TD.EVENTO_ESPERA_TP_MIN .. " min (fechou?)", true)
     end
+    -- v5.5: 10s sem pisar no sqm do TP: "!tp thais" (ver TD.TP_THAIS_SEG)
+    if not ev.dentro and pAgora then
+        local t = agoraMs()
+        -- pisou no sqm do TP: esta conseguindo chegar, zera a contagem. Sem portal o sqm teleporta na hora pro
+        -- corredor (o char nunca aparece EM CIMA dele): estava colado no sqm e caiu no corredor = pisou.
+        local pisouSemPortal = pAntes and dist(pAntes, TD.TP_EVENTO) <= 1 and TD.naVoltaTpEvento(pAgora)
+        if pisouSemPortal then TD.logEv("Pisou no sqm do TP (sem portal, voltou pro corredor): contagem zerada.") end
+        if pisouSemPortal or mesmaPos(pAgora, TD.TP_EVENTO) then ev.semTpDesde = t end
+        ev.semTpDesde = ev.semTpDesde or t
+        if t - ev.semTpDesde >= TD.TP_THAIS_SEG * 1000 then
+            ev.semTpDesde = t
+            ev.tpThaisAte = t + 15000
+            if player.stopAutoWalk then pcall(function() player:stopAutoWalk() end) end
+            local okSay = say and pcall(function() say("!tp thais") end)
+            local okTalk = not okSay and g_game.talk and pcall(function() g_game.talk("!tp thais") end)
+            TD.logEv(TD.TP_THAIS_SEG .. "s sem pisar no sqm do TP: !tp thais ("
+                .. (okSay and "say" or (okTalk and "talk" or "FALHOU")) .. ").")
+        end
+    end
+    -- v5.5: caiu na escada do lado do TP (andar 8): vai pro pe da escada e pisa NORTH ate voltar pra cima
+    if not ev.dentro and TD.noBuracoEvento(pAgora) then
+        if ev.fase ~= "SUBINDO ESCADA" then TD.logEv("Caiu na escada do TP: voltando pra cima.") end
+        ev.fase = "SUBINDO ESCADA"
+        local s = TD.SUBIDA_BURACO_EVENTO
+        if not mesmaPos(pAgora, s) then return TD.irPara(s) end
+        local t = agoraMs()
+        if t >= (ev.proxSubida or 0) then
+            ev.proxSubida = t + 1000
+            if player.stopAutoWalk then pcall(function() player:stopAutoWalk() end) end
+            TD.caminho = nil
+            TD.passoProprioAte = t + 600
+            g_game.walk(TD.LADOS.N)
+        end
+        return
+    end
+    if ev.fase == "SUBINDO ESCADA" then ev.fase = "ROTA" end
     if ev.tipo == "firestorm" and pAgora and TD.naArenaFire(pAgora) and not ev.dentro then
         ev.dentro = true
         TD.logEv("FireStorm: entrou na arena.")
@@ -3908,6 +4016,10 @@ function TD.checkin()
     -- um checkin so no CaveBot: eventos primeiro (horario fixo), depois tasks
     local ev = TaskDemon.checkinEvento()
     if ev ~= true then return ev end
+    if not TD.ativo and not TD.evRun and cfg.tarefaChamada then
+        local r = TD.reenviarLabel(cfg.tarefaChamada, TD.log)
+        if r then return r end
+    end
     if TD.ativo or cfg.tarefaChamada or TD.evRun or TD.eventoChamado then return true end
     local hoje = os.date("%Y-%m-%d")
     for _, k in ipairs(TD.AGENDAVEIS) do
@@ -5308,7 +5420,10 @@ macro(500, function()
     end
     local rota = ev and ev.rota and TD.ROTAS and (TD.rota == "VOLTA" and TD.rotaVolta or TD.ROTAS[TD.rota])
     ui.evRota:setText("Rota: " .. (rota and (TD.perfilAtivo .. " / " .. TD.rota .. " (goto " .. TD.wp .. "/" .. #rota .. ")") or "-"))
-    ui.evTempo:setText("Tempo: " .. (ev and formatarTempo(os.time() - ev.inicio) or "-"))
+    -- v5.5: contagem do "!tp thais" (zera toda vez que pisa no sqm do TP)
+    local semTp = ev and ev.rota and not ev.dentro and ev.semTpDesde
+        and (" | Sem pisar no TP: " .. math.floor((agoraMs() - ev.semTpDesde) / 1000) .. "/" .. TD.TP_THAIS_SEG .. "s") or ""
+    ui.evTempo:setText("Tempo: " .. (ev and formatarTempo(os.time() - ev.inicio) or "-") .. semTp)
     ui.evUltimo:setText("Ultimo: " .. (TD.evUltimo or "-"))
     ui.evLog:setText(TD.eventoEv)
 end)
