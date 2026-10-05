@@ -317,7 +317,7 @@ function TD.log(t)
 end
 -- versao do codigo: aparece no log ao carregar, pra confirmar que o vBot esta rodando o arquivo novo
 -- SUBIR a cada entrega (1.0, 1.1, 1.2 ...): aparece no titulo do painel "TASKS 1.0" e no log ao carregar
-TD.VERSAO = "5.8"
+TD.VERSAO = "5.9"
 TD.log("Task Demon versao " .. TD.VERSAO .. " carregado.")
 -- aviso dos perfis: so no terminal do cliente (o usuario nao quer isso no log do painel)
 if TaskDemon.avisoPerfis then print("[Task Demon] " .. TaskDemon.avisoPerfis) end
@@ -393,6 +393,8 @@ end
 -- zera o progresso que sobrou (ex.: Angry Bird 2/10 de sexta: na segunda matava so 8 e a task nao concluia).
 -- 1a vez (sem cfg.progDia) so marca o dia: nao apaga o progresso de hoje de quem acabou de atualizar.
 TD.VIRADA_TASKS_MIN = 6 * 60 + 15
+-- v5.9: tasks que, ao terminar, voltam pela rota DP (goto mais perto ate o ultimo = dentro do DP)
+TD.VOLTA_PELO_DP = {angrybird = true}
 function TD.viradaDiaTasks()
     local dia = os.date("%Y-%m-%d", os.time() - TD.VIRADA_TASKS_MIN * 60)
     if cfg.progDia == dia then return end
@@ -3261,9 +3263,10 @@ function TD.finalizar(motivo)
         local cam = TD.ROTAS and TD.ROTAS.CAMINHO or {}
         local dp = TD.ROTAS and TD.ROTAS.DP or {}
         TD.rotaVolta = nil
-        if #dp > 0 then
+        if #dp > 0 and TD.VOLTA_PELO_DP[cfg.tarefa] then
             -- v5.8: rota DP com gotos = percurso ate o DP (ultimo goto = dentro do DP). Comeca no goto mais
             -- perto de onde terminou e segue ate o fim (antes so voltava pelo CAMINHO e se perdia longe dele)
+            -- v5.9: so nas tasks de TD.VOLTA_PELO_DP (Angry Bird); as outras voltam pelo CAMINHO como antes
             TD.rotaVolta = {}
             for i = 1, #dp do TD.rotaVolta[i] = dp[i] end
             local u = dp[#dp]
