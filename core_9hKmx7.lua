@@ -115,7 +115,7 @@ TaskDemon.copiarPerfil = copiarPerfil
 -- vao pro arquivo do personagem (/TaskDemon/<char>.json), que SEMPRE salva e vale em qualquer bot/config:
 -- CaveBots do painel + agenda (horarios/labels) + CaveBot de cada task/evento + label ao terminar de cada evento.
 -- (o storage do vBot pode falhar ao salvar; ai na troca de painel/reload voltava a agenda antiga)
-TaskDemon.CAMPOS_ARQ = {"perfis", "agenda", "perfilTarefa", "eventoPerfil", "evLabelFimPor"}
+TaskDemon.CAMPOS_ARQ = {"perfis", "agenda", "perfilTarefa", "eventoPerfil", "evLabelFimPor", "evDisputar"}
 function TaskDemon.arquivoPerfis()
     local ok, nome = pcall(function() return player:getName() end)
     if not ok or type(nome) ~= "string" or nome == "" then return nil end
@@ -317,7 +317,7 @@ function TD.log(t)
 end
 -- versao do codigo: aparece no log ao carregar, pra confirmar que o vBot esta rodando o arquivo novo
 -- SUBIR a cada entrega (1.0, 1.1, 1.2 ...): aparece no titulo do painel "TASKS 1.0" e no log ao carregar
-TD.VERSAO = "5.6"
+TD.VERSAO = "5.7"
 TD.log("Task Demon versao " .. TD.VERSAO .. " carregado.")
 -- aviso dos perfis: so no terminal do cliente (o usuario nao quer isso no log do painel)
 if TaskDemon.avisoPerfis then print("[Task Demon] " .. TaskDemon.avisoPerfis) end
@@ -3004,6 +3004,11 @@ macro(50, TD.protegido("eventoRota", function()
         if not ev.naArena then return TD.andarRota() end
         local zs = p and TD.zombiesNaTela(p) or {}
         ev.zombies = #zs
+        -- v5.7: "Disputar" desmarcado na aba EVENTOS (makers/MC): entrou na arena = fica parado, nao foge
+        if not TD.zombieDisputar() then
+            ev.fugaEstado = "Parado (Disputar desmarcado)"
+            return
+        end
         if ev.fase ~= "FUGA" and #zs > 0 then
             ev.fase = "FUGA"
             if ev.zSaida then
@@ -5284,6 +5289,10 @@ TaskDemonWindow < UIWindow
       TDCampo
         id: evLabelFim
         width: 155
+    TDCheck
+      id: evDisputar
+      margin-top: 4
+      text: Disputar (fugir dos zombies pra vencer)
     HorizontalSeparator
       height: 2
       margin-top: 6
@@ -5335,7 +5344,7 @@ for _, id in ipairs({"closeButton", "relogioTask", "relogioEvento", "mostrarTask
     "agendaInfo", "ligar", "modo", "meta", "alcance", "zerar", "evento", "restaurar", "fechar",
     "cbHunt", "cbAtualizar", "cbAgora", "perfilSel", "perfilNovo", "perfilRenomear",
     "perfilExcluir",
-    "rotaPrincipal", "rotaCidade", "rotaDP", "agTasks", "agEventos", "painelEventos", "painelTasks", "secoesEv", "evEstado", "evFase", "evBoss", "evRota", "evTempo", "evUltimo", "evLog", "evLabelFim", "evPrev", "evNext", "evNome", "evPronto", "evCombo", "evMaster", "cbEventos",
+    "rotaPrincipal", "rotaCidade", "rotaDP", "agTasks", "agEventos", "painelEventos", "painelTasks", "secoesEv", "evEstado", "evFase", "evBoss", "evRota", "evTempo", "evUltimo", "evLog", "evLabelFim", "evDisputar", "evPrev", "evNext", "evNome", "evPronto", "evCombo", "evMaster", "cbEventos",
     "listaGotos", "gotoAdd", "gotoRemover", "gotoInfo", "gotoGravar", "gravarSqm", "gotoWait", "gotoWaitAplicar", "buscaMax", "cbEditar", "gotoClear", "gotoLado", "gotoWaitBtn", "cbTask", "gotosScroll",
     "pkAtivo", "pkFugas"}) do
     ui[id] = el(id)
@@ -5355,7 +5364,7 @@ end
 
 local ABAS = {STATUS = "pageStatus", AGENDA = "pageAgenda", CAVEBOT = "pageCaveBot", PK = "pagePK", EVENTOS = "pageEventos", TARGET = "pageTarget"}
 local BOTOES_ABA = {STATUS = "abaStatus", AGENDA = "abaAgenda", CAVEBOT = "abaCaveBot", PK = "abaPK", EVENTOS = "abaEventos", TARGET = "abaTarget"}
-local ALTURAS = {STATUS = 398, AGENDA = 546, CAVEBOT = 636, PK = 675, EVENTOS = 437, TARGET = 398}
+local ALTURAS = {STATUS = 398, AGENDA = 546, CAVEBOT = 636, PK = 675, EVENTOS = 457, TARGET = 398}
 function TD.mostrarAba(nome)
     for aba, pagina in pairs(ABAS) do
         if aba == nome then ui[pagina]:show() else ui[pagina]:hide() end
@@ -5375,6 +5384,9 @@ ui.abaCaveBot.onClick = function() TD.mostrarAba("CAVEBOT") end
 ui.abaPK.onClick = function() TD.mostrarAba("PK") end
 ui.abaEventos.onClick = function() TD.mostrarAba("EVENTOS") end
 cfg.evLabelFimPor = cfg.evLabelFimPor or {}
+-- v5.7: Zombie "Disputar": marcado (padrao) = foge pra vencer; desmarcado = entra e fica parado
+cfg.evDisputar = cfg.evDisputar or {}
+function TD.zombieDisputar() return cfg.evDisputar.ev_zombie ~= false end
 cfg.eventosAtivo = false -- sempre comeca desligado (liga clicando ou pela agenda)
 cfg.eventoPerfil = cfg.eventoPerfil or {}
 TD.evEditando = TD.evEditando or "ev_island"
@@ -5434,6 +5446,7 @@ function TD.atualizarEventos()
     for _, n in ipairs(TD.nomesPerfis()) do ui.evCombo:addOption(n) end
     pcall(function() ui.evCombo:setCurrentOption(cfg.eventoPerfil[k] or "(nenhum)") end)
     ui.evCombo.onOptionChange = function(_, t) cfg.eventoPerfil[TD.evEditando] = (t ~= "(nenhum)") and t or nil end
+    if TD.pintarDisputar then TD.pintarDisputar() end
     TD.pintarEventos()
 end
 local function trocarEvento(passo)
@@ -5656,6 +5669,18 @@ local function marcarCaixa(widget, marcado)
     end
     if widget.setChecked then pcall(function() widget:setChecked(marcado) end) end
 end
+
+-- v5.7: caixa "Disputar" da aba EVENTOS (so aparece no Zombie)
+function TD.pintarDisputar()
+    ui.evDisputar:setVisible(TD.evEditando == "ev_zombie")
+    marcarCaixa(ui.evDisputar, TD.zombieDisputar())
+end
+ui.evDisputar.onClick = function()
+    cfg.evDisputar.ev_zombie = not TD.zombieDisputar()
+    TD.pintarDisputar()
+    TD.logEv("Zombie: Disputar " .. (TD.zombieDisputar() and "MARCADO (foge pra vencer)." or "DESMARCADO (entra e fica parado)."))
+end
+TD.pintarDisputar()
 
 function TD.atualizarTarget()
     if not TD.TAREFAS[TD.tgEditando] then TD.tgEditando = TD.ORDEM[1] end
