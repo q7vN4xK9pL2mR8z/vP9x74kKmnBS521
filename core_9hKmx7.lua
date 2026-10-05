@@ -317,7 +317,7 @@ function TD.log(t)
 end
 -- versao do codigo: aparece no log ao carregar, pra confirmar que o vBot esta rodando o arquivo novo
 -- SUBIR a cada entrega (1.0, 1.1, 1.2 ...): aparece no titulo do painel "TASKS 1.0" e no log ao carregar
-TD.VERSAO = "5.7"
+TD.VERSAO = "5.8"
 TD.log("Task Demon versao " .. TD.VERSAO .. " carregado.")
 -- aviso dos perfis: so no terminal do cliente (o usuario nao quer isso no log do painel)
 if TaskDemon.avisoPerfis then print("[Task Demon] " .. TaskDemon.avisoPerfis) end
@@ -389,6 +389,26 @@ function TD.zerarTarefa(k)
     cfg.progBase[k] = cfg.progServidor[k] or 0
     cfg.prog[k] = 0
 end
+-- v5.8: virada do dia das tasks (06:15, depois do SS, igual Boss Farm). O servidor zera as tasks no SS, entao
+-- zera o progresso que sobrou (ex.: Angry Bird 2/10 de sexta: na segunda matava so 8 e a task nao concluia).
+-- 1a vez (sem cfg.progDia) so marca o dia: nao apaga o progresso de hoje de quem acabou de atualizar.
+TD.VIRADA_TASKS_MIN = 6 * 60 + 15
+function TD.viradaDiaTasks()
+    local dia = os.date("%Y-%m-%d", os.time() - TD.VIRADA_TASKS_MIN * 60)
+    if cfg.progDia == dia then return end
+    local primeiraVez = cfg.progDia == nil
+    cfg.progDia = dia
+    if primeiraVez then return end
+    local pendentes = {}
+    for k, v in pairs(cfg.prog) do
+        if (tonumber(v) or 0) > 0 then table.insert(pendentes, (TD.TAREFAS[k] and TD.TAREFAS[k].titulo or k) .. " " .. v) end
+        cfg.prog[k] = 0
+    end
+    cfg.progBase, cfg.progServidor = {}, {}
+    if TD.log then TD.log("Novo dia (06:15): progresso das tasks zerado" .. (#pendentes > 0 and (" (" .. table.concat(pendentes, ", ") .. ")") or "") .. ".") end
+end
+TD.viradaDiaTasks()
+macro(60000, TD.viradaDiaTasks)
 function TD.definir(n)
     if n == 0 then TD.zerarTarefa(cfg.tarefa) return end
     cfg.prog[cfg.tarefa] = n
@@ -3239,9 +3259,20 @@ function TD.finalizar(motivo)
         TD.voltandoDesde = os.time()
         TD.voltaFeita = true
         local cam = TD.ROTAS and TD.ROTAS.CAMINHO or {}
-        if #cam > 0 and not TD.pertoDaRota("DP", 3) then
+        local dp = TD.ROTAS and TD.ROTAS.DP or {}
+        TD.rotaVolta = nil
+        if #dp > 0 then
+            -- v5.8: rota DP com gotos = percurso ate o DP (ultimo goto = dentro do DP). Comeca no goto mais
+            -- perto de onde terminou e segue ate o fim (antes so voltava pelo CAMINHO e se perdia longe dele)
+            TD.rotaVolta = {}
+            for i = 1, #dp do TD.rotaVolta[i] = dp[i] end
+            local u = dp[#dp]
+            TD.posDP = {x = u[1], y = u[2], z = u[3]}
+        elseif #cam > 0 and not TD.pertoDaRota("DP", 3) then
             TD.rotaVolta = {}
             for i = #cam, 1, -1 do table.insert(TD.rotaVolta, cam[i]) end
+        end
+        if TD.rotaVolta then
             TD.rota = "VOLTA"
             local p = player:getPosition()
             local melhor, melhorD = 1, 99999
