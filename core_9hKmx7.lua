@@ -213,7 +213,57 @@ for _, p in pairs(cfg.perfis) do
     end
 end
 
+-- v6.0: CaveBot padrao "Angry Bird" (CAMINHO do Aurahara, DP = percurso de 104 gotos do usuario): PRINCIPAL vazio
+-- (cada um grava a sua hunt). So cria 1 vez e so se o char ainda nao tem um perfil com esse nome.
+TaskDemon.PERFIL_ANGRY_BIRD = {
+    CAMINHO = {
+        {32346, 32227, 7, false, false}, {32342, 32225, 7, false, false}, {32342, 32225, 7, false, "W"}, {18422, 18838, 5, false, false},
+        {18422, 18829, 5, false, false}, {18422, 18819, 5, false, false}, {18422, 18810, 5, false, false}, {18422, 18802, 5, false, false},
+        {18422, 18798, 5, false, false}, {18422, 18798, 5, false, "N"}, {18322, 18829, 5, false, false}, {18322, 18820, 5, false, false},
+        {18322, 18811, 5, false, false}, {18322, 18809, 5, false, false}, {18322, 18809, 5, false, "N"}, {5107, 5204, 5, false, false},
+        {5114, 5204, 5, false, false}, {5118, 5204, 5, false, false}, {5118, 5204, 5, false, "E"}, {5120, 5204, 6, false, false},
+        {5122, 5204, 6, false, false}, {5122, 5204, 6, false, "E"}, {5132, 5208, 7, false, false}, {5137, 5212, 7, false, false},
+    },
+    DP = {
+        {5086, 5264, 7, false, false}, {5084, 5259, 7, false, false}, {5084, 5258, 7, false, false}, {5084, 5257, 7, false, false},
+        {5084, 5252, 7, false, false}, {5079, 5250, 7, false, false}, {5078, 5245, 7, false, false}, {5078, 5240, 7, false, false},
+        {5078, 5235, 7, false, false}, {5078, 5234, 7, false, false}, {5078, 5233, 7, false, false}, {5078, 5232, 7, false, false},
+        {5078, 5227, 7, false, false}, {5078, 5222, 7, false, false}, {5078, 5217, 7, false, false}, {5078, 5212, 7, false, false},
+        {5078, 5207, 7, false, false}, {5077, 5202, 7, false, false}, {5077, 5198, 7, false, false}, {5077, 5197, 7, false, false},
+        {5077, 5196, 7, false, false}, {5077, 5193, 7, false, false}, {5077, 5192, 7, false, false}, {5077, 5191, 7, false, false},
+        {5077, 5187, 7, false, false}, {5077, 5186, 7, false, false}, {5077, 5185, 7, false, false}, {5077, 5180, 7, false, false},
+        {5077, 5175, 7, false, false}, {5077, 5170, 7, false, false}, {5082, 5170, 7, false, false}, {5087, 5170, 7, false, false},
+        {5092, 5170, 7, false, false}, {5097, 5170, 7, false, false}, {5099, 5170, 7, false, false}, {5100, 5170, 7, false, false},
+        {5101, 5170, 7, false, false}, {5101, 5165, 7, false, false}, {5106, 5165, 7, false, false}, {5110, 5165, 7, false, false},
+        {5111, 5165, 7, false, false}, {5112, 5165, 7, false, false}, {5117, 5162, 7, false, false}, {5122, 5162, 7, false, false},
+        {5123, 5162, 7, false, false}, {5124, 5162, 7, false, false}, {5128, 5162, 7, false, false}, {5128, 5161, 7, false, false},
+        {5128, 5160, 7, false, false}, {5133, 5156, 7, false, false}, {5136, 5156, 7, false, false}, {5137, 5156, 7, false, false},
+        {5138, 5156, 7, false, false}, {5143, 5154, 7, false, false}, {5148, 5154, 7, false, false}, {5153, 5154, 7, false, false},
+        {5154, 5154, 7, false, false}, {5155, 5154, 7, false, false}, {5156, 5154, 7, false, false}, {5160, 5154, 7, false, false},
+        {5161, 5154, 7, false, false}, {5162, 5154, 7, false, false}, {5167, 5154, 7, false, false}, {5170, 5159, 7, false, false},
+        {5170, 5162, 7, false, false}, {5170, 5163, 7, false, false}, {5170, 5164, 7, false, false}, {5170, 5169, 7, false, false},
+        {5165, 5170, 7, false, false}, {5160, 5170, 7, false, false}, {5158, 5173, 7, false, false}, {5158, 5174, 7, false, false},
+        {5158, 5175, 7, false, false}, {5158, 5177, 7, false, false}, {5158, 5178, 7, false, false}, {5158, 5179, 7, false, false},
+        {5163, 5183, 7, false, false}, {5166, 5183, 7, false, false}, {5166, 5184, 7, false, false}, {5166, 5185, 7, false, false},
+        {5166, 5190, 7, false, false}, {5166, 5195, 7, false, false}, {5166, 5200, 7, false, false}, {5163, 5203, 7, false, false},
+        {5162, 5203, 7, false, false}, {5161, 5203, 7, false, false}, {5156, 5203, 7, false, false}, {5153, 5203, 7, false, false},
+        {5152, 5203, 7, false, false}, {5151, 5203, 7, false, false}, {5150, 5203, 7, false, false}, {5149, 5203, 7, false, false},
+        {5148, 5203, 7, false, false}, {5147, 5203, 7, false, false}, {5146, 5208, 7, false, false}, {5144, 5211, 7, false, false},
+        {5143, 5211, 7, false, false}, {5142, 5211, 7, false, false}, {5139, 5216, 7, false, false}, {5139, 5221, 7, false, false},
+        {5139, 5224, 7, false, false}, {5139, 5225, 7, false, false}, {5139, 5226, 7, false, false}, {5139, 5229, 7, false, false},
+    },
+}
+local criouAngryBird = false
+if not cfg.angryBirdPadrao then
+    cfg.angryBirdPadrao = true
+    if not cfg.perfis["Angry Bird"] then
+        cfg.perfis["Angry Bird"] = copiarPerfil(TaskDemon.PERFIL_ANGRY_BIRD)
+        criouAngryBird = true
+    end
+end
+
 cfg.perfilTarefa = cfg.perfilTarefa or {infernal = "Task Demon", goshnar = "Task Mega", dragon = "Task Demon"}
+if criouAngryBird and not cfg.perfilTarefa.angrybird then cfg.perfilTarefa.angrybird = "Angry Bird" end
 TaskDemon.buracosNaCarga = TaskDemon.semBuracos(cfg, "storage.TaskDemon")
 
 function TaskDemon.nomesPerfis()
@@ -317,7 +367,7 @@ function TD.log(t)
 end
 -- versao do codigo: aparece no log ao carregar, pra confirmar que o vBot esta rodando o arquivo novo
 -- SUBIR a cada entrega (1.0, 1.1, 1.2 ...): aparece no titulo do painel "TASKS 1.0" e no log ao carregar
-TD.VERSAO = "5.9"
+TD.VERSAO = "6.3"
 TD.log("Task Demon versao " .. TD.VERSAO .. " carregado.")
 -- aviso dos perfis: so no terminal do cliente (o usuario nao quer isso no log do painel)
 if TaskDemon.avisoPerfis then print("[Task Demon] " .. TaskDemon.avisoPerfis) end
@@ -617,6 +667,27 @@ local VETOR = {
     [NorthEast or 4] = {1, -1}, [SouthEast or 5] = {1, 1}, [SouthWest or 6] = {-1, 1}, [NorthWest or 7] = {-1, -1},
 }
 
+-- v6.0: escada/buraco = minimapa amarelo (210) + tile nao "pathable" (mesmo teste do vBot/follow). O findPath do
+-- painel aceita sqm nao pathable, entao indo atras de bicho as vezes cortava caminho pela escada e subia de andar.
+function TD.ehEscada(pos)
+    local okC, cor = pcall(function() return g_map.getMinimapColor(pos) end)
+    if not okC or cor ~= 210 then return false end
+    local tile = g_map.getTile(pos)
+    if not tile then return false end
+    local okP, pathable = pcall(function() return tile:isPathable() end)
+    return okP and pathable == false
+end
+function TD.caminhoPassaEscada(p, dirs)
+    local q = {x = p.x, y = p.y, z = p.z}
+    for i = 1, #dirs - 1 do   -- o ultimo sqm (o destino) pode ser escada: goto posto na escada de proposito
+        local v = VETOR[dirs[i]]
+        if not v then return false end
+        q = {x = q.x + v[1], y = q.y + v[2], z = q.z}
+        if TD.ehEscada(q) then return true end
+    end
+    return false
+end
+
 function TD.endireitar(p, dirs)
     if not TD.analisarTile or not g_map then return dirs end
     local saida, q = {}, {x = p.x, y = p.y, z = p.z}
@@ -697,6 +768,8 @@ function TD.irParaCaminho(destino)
             TD.caminho = TD.caminhoReto(p, destino) or calcularCaminho(p, destino, true, busca) or calcularCaminho(p, destino, false, busca)
         end
         if TD.caminho then TD.caminho = TD.endireitar(p, TD.caminho) end
+        -- v6.0: caminho passando por escada no meio: descarta (o autoWalk do client abaixo desvia de escada)
+        if TD.caminho and TD.caminhoPassaEscada(p, TD.caminho) then TD.caminho = nil end
         if TD.caminho and TD.caminhoPassaTravado and TD.caminhoPassaTravado(p, TD.caminho) then
             TD.caminho = TD.desvioLateral(p, destino)
         end
@@ -2308,16 +2381,43 @@ function TD.decidirFugaZombie(ev, p, zsTela)
     end
     -- previsao do zombie: anda RETO (videos 2026-10-02: 95% dos passos dos zombies sao num eixo so; a diagonal
     -- e cara pra eles tambem). Sim na arena real com grupos: 8 zombies 110 -> 141/200, 5 zombies 187 -> 200.
-    local function passoZ(z, alvo, ocup)
-        local melhor, md, mm = z, chebyshev(z, alvo), math.abs(z.x - alvo.x) + math.abs(z.y - alvo.y)
-        for _, d in ipairs(ORTO) do
+    -- otimizacao EXATA: a escolha do zombie em z indo atras de alvo so depende dessas 2 posicoes (o mapa nao
+    -- muda dentro de 1 decisao). Calcula 1 vez os vizinhos que melhoram, ja na ordem de preferencia (menor distancia;
+    -- empate = o primeiro na ordem N, L, S, O, igual ao laco antigo) e depois so pula os ocupados.
+    local memoZ = {}
+    local function candidatosZ(z, alvo)
+        -- chave unica: posicoes relativas a mim (a arena inteira cabe folgado em +-2048)
+        local ka = (((z.x - p.x + 2048) * 4096 + (z.y - p.y + 2048)) * 4096 + (alvo.x - p.x + 2048)) * 4096 + (alvo.y - p.y + 2048)
+        local lista = memoZ[ka]
+        if lista then return lista end
+        lista = {}
+        local md, mm = chebyshev(z, alvo), math.abs(z.x - alvo.x) + math.abs(z.y - alvo.y)
+        for i, d in ipairs(ORTO) do
             local q = {x = z.x + d[1], y = z.y + d[2], z = z.z}
-            if not ocup[chaveXY(q.x, q.y)] and zombieAnda(q) then
+            if zombieAnda(q) then
                 local dq, mq = chebyshev(q, alvo), math.abs(q.x - alvo.x) + math.abs(q.y - alvo.y)
-                if dq < md or (dq == md and mq < mm) then melhor, md, mm = q, dq, mq end
+                if dq < md or (dq == md and mq < mm) then
+                    table.insert(lista, {q = q, k = chaveXY(q.x, q.y), dq = dq, mq = mq, i = i})
+                end
             end
         end
-        return melhor
+        table.sort(lista, function(a, b)
+            if a.dq ~= b.dq then return a.dq < b.dq end
+            if a.mq ~= b.mq then return a.mq < b.mq end
+            return a.i < b.i
+        end)
+        memoZ[ka] = lista
+        return lista
+    end
+    -- ocupado nesta rodada de passos dos zombies: ocup[k] == geracao (sem criar tabela nova a cada rodada)
+    local ocup, geracao = {}, 0
+    local function passoZ(z, alvo)
+        local lista = candidatosZ(z, alvo)
+        for i = 1, #lista do
+            local c = lista[i]
+            if ocup[c.k] ~= geracao then return c.q end
+        end
+        return z
     end
 
     -- feixe: cada estado = eu, zombies, 1o passo, sobra de passo de zombie.
@@ -2334,18 +2434,24 @@ function TD.decidirFugaZombie(ev, p, zsTela)
                         local custo = (d[3] ~= nil and d[1] ~= 0 and d[2] ~= 0) and TD.ZOMBIE_CUSTO_DIAG or 1
                         local a, z2 = e.acc + r * custo, e.zs
                         while a >= 1 do
-                            local novo, ocup = {}, {}
-                            for i, z in ipairs(z2) do
-                                novo[i] = passoZ(z, q, ocup)
-                                ocup[chaveXY(novo[i].x, novo[i].y)] = true
+                            local novo = {}
+                            geracao = geracao + 1
+                            for i = 1, #z2 do
+                                local nz = passoZ(z2[i], q)
+                                novo[i] = nz
+                                ocup[chaveXY(nz.x, nz.y)] = geracao
                             end
                             z2, a = novo, a - 1
                         end
                         local dmin, soma = 99, 0
-                        for _, z in ipairs(z2) do
-                            local dz = chebyshev(q, z)
+                        for i = 1, #z2 do
+                            local z = z2[i]
+                            local dx, dy = q.x - z.x, q.y - z.y
+                            if dx < 0 then dx = -dx end
+                            if dy < 0 then dy = -dy end
+                            local dz = dx > dy and dx or dy
                             if dz < dmin then dmin = dz end
-                            soma = soma + math.min(dz, 20)
+                            soma = soma + (dz < 20 and dz or 20)
                         end
                         if dmin > CAPT then
                             local k = { chaveXY(q.x, q.y) }
@@ -3263,7 +3369,8 @@ function TD.finalizar(motivo)
         local cam = TD.ROTAS and TD.ROTAS.CAMINHO or {}
         local dp = TD.ROTAS and TD.ROTAS.DP or {}
         TD.rotaVolta = nil
-        if #dp > 0 and TD.VOLTA_PELO_DP[cfg.tarefa] then
+        TD.voltaPeloDP = #dp > 0 and TD.VOLTA_PELO_DP[cfg.tarefa] or false
+        if TD.voltaPeloDP then
             -- v5.8: rota DP com gotos = percurso ate o DP (ultimo goto = dentro do DP). Comeca no goto mais
             -- perto de onde terminou e segue ate o fim (antes so voltava pelo CAMINHO e se perdia longe dele)
             -- v5.9: so nas tasks de TD.VOLTA_PELO_DP (Angry Bird); as outras voltam pelo CAMINHO como antes
@@ -3558,12 +3665,53 @@ macro(50, TD.protegido("alvos", function()
     end
 end))
 
+-- v6.0: subiu escada sem querer (ex.: Angry Bird, andar 6): vai pro sqm de cima da escada e pisa no lado dela.
+-- {x, y, z, lado}. So age se o goto atual da rota NAO for nesse andar (rota que passa no andar 6 de proposito).
+TD.DESCIDAS = {
+    angrybird = {
+        {5148, 5170, 6, "S"}, {5192, 5160, 6, "S"}, {5136, 5225, 6, "S"},
+        {5140, 5225, 6, "S"}, {5098, 5214, 6, "E"},
+    },
+}
+TD.DESCIDA_RAIO = 10   -- sqm: so procura escada de descida ate essa distancia
+function TD.descerEscada()
+    local lista = TD.DESCIDAS[cfg.tarefa]
+    local p = lista and player:getPosition()
+    if not p then return false end
+    local w = rotaAtual()[TD.wp]
+    if w and w[3] == p.z then return false end
+    local melhor, melhorD = nil, nil
+    for _, d in ipairs(lista) do
+        local dd = dist(p, {x = d[1], y = d[2], z = d[3]})
+        if dd <= TD.DESCIDA_RAIO and (not melhorD or dd < melhorD) then melhor, melhorD = d, dd end
+    end
+    if not melhor then
+        TD.descendo = nil
+        return false
+    end
+    if not TD.descendo then
+        TD.descendo = true
+        TD.log("Subiu escada sem querer (andar " .. p.z .. "): descendo em " .. melhor[1] .. ", " .. melhor[2] .. ".")
+    end
+    TD.estado = "DESCENDO ESCADA"
+    if melhorD > 0 then
+        TD.irPara({x = melhor[1], y = melhor[2], z = melhor[3]})
+    elseif not andando() and agoraMs() >= (TD.descidaPassoAte or 0) then
+        TD.descidaPassoAte = agoraMs() + 600
+        TD.passoProprioAte = agoraMs() + 600
+        g_game.walk(TD.LADOS[melhor[4]])
+    end
+    return true
+end
+
 macro(50, TD.protegido("andar", function()
     if not TD.ativo then return end
+    if TD.descerEscada() then return end
 
     if TD.voltando then
         local p = player:getPosition()
-        if dist(p, TD.posDP) <= 1 or os.time() - (TD.voltandoDesde or 0) > 600 then
+        -- v6.0: voltando pela rota DP (Angry Bird): pisou em PZ no percurso = chegou (nao precisa ir ate o fim)
+        if dist(p, TD.posDP) <= 1 or os.time() - (TD.voltandoDesde or 0) > 600 or (TD.voltaPeloDP and TD.emPz()) then
             TD.entregarAoBot("TASK CONCLUIDA")
         elseif not TD.emManual() then
             if TD.rota == "VOLTA" and not TD.voltaFeita then
